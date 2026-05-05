@@ -1,7 +1,9 @@
 services:
 
   postgres:
-    image: postgres:17.6-alpine3.22
+    # We use pgvector/pgvector instead of standard postgres to support vector embeddings.
+    # We will use this locally, but keep the code modular to switch to Pinecone in production.
+    image: pgvector/pgvector:pg17
     container_name: postgres
     environment:
       POSTGRES_DB: ragdb

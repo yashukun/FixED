@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import sessionmaker
 
-from .models import Base, Job, JobStatus  # noqa: F401 — re-export
+from .models import Base, Job, JobStatus, DocumentChunk  # noqa: F401 — re-export
 
 # ── Engine ───────────────────────────────────────────────────────────────
 
@@ -58,8 +58,15 @@ def get_db_context():
 
 # ── DB operations ────────────────────────────────────────────────────────
 
+from sqlalchemy import create_engine, text
+
 def init_db():
     """Create all tables that don't exist yet."""
+    # Ensure the pgvector extension is installed before creating vector columns
+    with engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.commit()
+        
     Base.metadata.create_all(bind=engine)
 
 

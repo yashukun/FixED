@@ -6,3 +6,4 @@ sqlalchemy==2.0.27
 python-multipart>=0.0.5
 pydantic-settings==2.1.0
 python-dotenv==1.0.0
+pgvector==0.2.5

@@ -5,7 +5,7 @@ Ingest Service — upload documents to storage and track jobs in PostgreSQL.
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, status
 
 from config import settings
 from db import init_db, get_job, get_db_context, Job, JobStatus
@@ -58,7 +58,8 @@ async def upload(file: UploadFile = File(...)):
 
     # Generate job id & storage key
     job_id = uuid.uuid4()
-    storage_key = f"{job_id}/{file.filename}"
+    filename = file.filename or "unknown.bin"
+    storage_key = f"{job_id}/{filename}"
 
     # Upload to storage
     storage_path = storage.upload(
@@ -71,7 +72,7 @@ async def upload(file: UploadFile = File(...)):
     with get_db_context() as db:
         job = Job(
             id=job_id,
-            filename=file.filename,
+            filename=filename,
             storage_path=storage_path,
             file_size=file_size,
             status=JobStatus.PENDING,

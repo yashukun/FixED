@@ -2,8 +2,9 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, String, Integer, DateTime, Text, Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -37,3 +38,29 @@ class Job(Base):
 
     def __repr__(self):
         return f"<Job(id={self.id}, status={self.status}, filename={self.filename})>"
+
+
+class DocumentChunk(Base):
+    """
+    Stores document chunks and their vector embeddings using pgvector.
+    
+    NOTE: We are using pgvector locally for development to avoid cloud dependencies.
+    In the future, we will transition to Pinecone for production use.
+    This table stores the same data that would be sent to Pinecone.
+    """
+    __tablename__ = "document_chunks"
+
+    id = Column(String(255), primary_key=True) # E.g., "{file_id}_{chunk_index}"
+    file_id = Column(String(255), nullable=False, index=True)
+    chunk_index = Column(Integer, nullable=False)
+    text_content = Column(Text, nullable=False)
+    filename = Column(String(255), nullable=False)
+    
+    # We use 1536 as the dimension for OpenAI's text-embedding-3-small
+    embedding = Column(Vector(1536))
+    
+    # Store any extra metadata (like Pinecone does)
+    metadata_ = Column("metadata", JSONB, nullable=True)
+
+    def __repr__(self):
+        return f"<DocumentChunk(id={self.id}, file_id={self.file_id}, index={self.chunk_index})>"
