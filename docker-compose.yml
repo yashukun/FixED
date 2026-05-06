@@ -41,8 +41,23 @@ services:
       dockerfile: ./services/ingest/Dockerfile
     ports: [ "8001:8000" ]
     env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: ./services/ingest/Dockerfile
+    command: celery -A shared.queue.celery_app worker --loglevel=info
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
   search:
     build: ./services/search

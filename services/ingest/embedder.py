@@ -8,7 +8,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from openai import OpenAI
 from pypdf import PdfReader
 
-from .pinecone_client import upsert_vectors
+from pinecone_client import upsert_vectors
+from db import set_status, JobStatus, get_db_context, Job
 
 # ---------------------------------------------------------------------------
 # Clients (module-level singletons — instantiated once per worker process)
@@ -35,7 +36,7 @@ def _get_openai() -> OpenAI:
 
 def _extract_text(file_bytes: bytes, filename: str) -> str:
     """Return plain text from PDF or TXT bytes."""
-    ext = filename.rsplit(".", 1)[-1].lower()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
     if ext == "pdf":
         reader = PdfReader(io.BytesIO(file_bytes))
@@ -110,31 +111,46 @@ def process_and_store(
     Returns {"chunk_count": N}.
     Raises ValueError for unsupported formats / empty content.
     """
-    # 1. Extract
-    text = _extract_text(file_bytes, filename)
+    try:
+        # 0. Mark job as PROCESSING
+        set_status(file_id, JobStatus.PROCESSING)
 
-    # 2. Chunk
-    chunks = _chunk_text(text)
+        # 1. Extract
+        text = _extract_text(file_bytes, filename)
 
-    # 3. Embed
-    embeddings = _embed_chunks(chunks)
+        # 2. Chunk
+        chunks = _chunk_text(text)
 
-    # 4. Build Pinecone vectors
-    vectors = [
-        {
-            "id": f"{file_id}_{idx}",
-            "values": embedding,
-            "metadata": {
-                "file_id": file_id,
-                "chunk_index": idx,
-                "text": chunk,
-                "filename": filename,
-            },
-        }
-        for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings))
-    ]
+        # 3. Embed
+        embeddings = _embed_chunks(chunks)
 
-    # 5. Upsert
-    upsert_vectors(vectors, namespace="documents")
+        # 4. Build vectors matching the Pinecone schema
+        vectors = [
+            {
+                "id": f"{file_id}_{idx}",
+                "values": embedding,
+                "metadata": {
+                    "file_id": file_id,
+                    "chunk_index": idx,
+                    "text": chunk,
+                    "filename": filename,
+                },
+            }
+            for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+        ]
 
-    return {"chunk_count": len(chunks)}
+        # 5. Upsert vectors
+        upsert_vectors(vectors, namespace="documents")
+
+        # 6. Mark job as COMPLETED and save the result
+        with get_db_context() as db:
+            job = db.query(Job).filter(Job.id == file_id).first()
+            if job:
+                job.status = JobStatus.COMPLETED
+                job.result = f"Processed {len(chunks)} chunks"
+
+        return {"chunk_count": len(chunks)}
+    except Exception as e:
+        # Mark job as FAILED
+        set_status(file_id, JobStatus.FAILED, error=str(e))
+        raise e

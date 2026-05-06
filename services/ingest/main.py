@@ -34,6 +34,8 @@ storage = get_storage_backend(
 )
 
 
+from tasks import process_document_task
+
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -78,6 +80,9 @@ async def upload(file: UploadFile = File(...)):
             status=JobStatus.PENDING,
         )
         db.add(job)
+
+    # Trigger background Celery task
+    process_document_task.delay(str(job_id))
 
     return {"job_id": str(job_id), "status": "pending"}
 
