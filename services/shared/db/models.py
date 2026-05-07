@@ -64,3 +64,21 @@ class DocumentChunk(Base):
 
     def __repr__(self):
         return f"<DocumentChunk(id={self.id}, file_id={self.file_id}, index={self.chunk_index})>"
+
+
+class BookChapter(Base):
+    """Stores chapter boundaries detected for each uploaded book."""
+    __tablename__ = "book_chapters"
+
+    id = Column(String(255), primary_key=True)  # E.g., "{file_id}_{chapter_number}"
+    file_id = Column(String(255), nullable=False, index=True)
+    number = Column(Integer, nullable=False)
+    title = Column(String(512), nullable=False)
+    start_page = Column(Integer, nullable=False)
+    end_page = Column(Integer, nullable=False)
+
+    def __repr__(self):
+        return (
+            f"<BookChapter(file_id={self.file_id}, number={self.number}, "
+            f"range={self.start_page}-{self.end_page})>"
+        )

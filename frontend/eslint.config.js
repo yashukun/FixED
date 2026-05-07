@@ -18,4 +18,16 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  {
+    files: ['vite.config.js', 'tailwind.config.js', 'postcss.config.js', 'src/**/*.test.{js,jsx}', 'src/test/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+      },
+    },
+    rules: {
+      'no-unused-vars': 'off',
+    },
+  },
 ])

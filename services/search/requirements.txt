@@ -1,3 +1,10 @@
 fastapi==0.111.0
 uvicorn==0.29.0
+minio==7.2.0
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.27
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
 pgvector==0.2.5
+qdrant-client>=1.9.0
+openai>=1.14.0

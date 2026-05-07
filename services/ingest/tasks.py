@@ -1,4 +1,5 @@
 import logging
+import traceback
 from celery.exceptions import Ignore
 
 from db import get_job, set_status, JobStatus
@@ -54,6 +55,7 @@ def process_document_task(self, job_id: str):
         
     except Exception as exc:
         logger.error(f"Failed to process job {job_id}: {exc}")
+        logger.error("Processing traceback for job %s:\n%s", job_id, traceback.format_exc())
         # Note: process_and_store already marks as FAILED if an error happens during embedding,
         # but if download fails, we catch it here and mark it FAILED.
         set_status(job_id, JobStatus.FAILED, error=str(exc))

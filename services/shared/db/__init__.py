@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import sessionmaker
 
-from .models import Base, Job, JobStatus, DocumentChunk  # noqa: F401 — re-export
+from .models import Base, Job, JobStatus, DocumentChunk, BookChapter  # noqa: F401 — re-export
 
 # ── Engine ───────────────────────────────────────────────────────────────
 
@@ -100,3 +100,43 @@ def get_job(job_id: str) -> dict | None:
             }
         except NoResultFound:
             return None
+
+
+def get_all_jobs() -> list[dict]:
+    """Return all jobs ordered by created_at descending."""
+    with get_db_context() as db:
+        jobs = db.query(Job).order_by(Job.created_at.desc()).all()
+        return [
+            {
+                "id": str(job.id),
+                "status": job.status.value if hasattr(job.status, "value") else job.status,
+                "filename": job.filename,
+                "storage_path": job.storage_path,
+                "file_size": job.file_size,
+                "created_at": job.created_at.isoformat(),
+                "updated_at": job.updated_at.isoformat(),
+                "error_message": job.error_message,
+                "result": job.result,
+            }
+            for job in jobs
+        ]
+
+
+def get_book_chapters(file_id: str) -> list[dict]:
+    """Return chapter metadata for a file ordered by chapter number."""
+    with get_db_context() as db:
+        rows = (
+            db.query(BookChapter)
+            .filter(BookChapter.file_id == file_id)
+            .order_by(BookChapter.number.asc())
+            .all()
+        )
+        return [
+            {
+                "number": row.number,
+                "title": row.title,
+                "start_page": row.start_page,
+                "end_page": row.end_page,
+            }
+            for row in rows
+        ]

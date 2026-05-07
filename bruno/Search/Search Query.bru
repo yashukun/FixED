@@ -1,0 +1,19 @@
+meta {
+  name: Search Query
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8002/search
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "query": "What is the main topic of this document?",
+    "top_k": 5,
+    "file_id": ""
+  }
+}

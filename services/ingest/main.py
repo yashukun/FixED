@@ -3,12 +3,21 @@ Ingest Service — upload documents to storage and track jobs in PostgreSQL.
 """
 
 import uuid
+import mimetypes
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, HTTPException, status, Response
 
 from config import settings
-from db import init_db, get_job, get_db_context, Job, JobStatus
+from db import (
+    init_db,
+    get_job,
+    get_all_jobs,
+    get_book_chapters,
+    get_db_context,
+    Job,
+    JobStatus,
+)
 from storage import get_storage_backend
 
 
@@ -35,6 +44,11 @@ storage = get_storage_backend(
 
 
 from tasks import process_document_task
+
+
+def _extract_storage_key(storage_path: str) -> str:
+    bucket_prefix = f"{settings.STORAGE_BUCKET}/"
+    return storage_path.split(bucket_prefix, 1)[-1] if bucket_prefix in storage_path else storage_path
 
 # ── Endpoints ────────────────────────────────────────────────────────────
 
@@ -94,3 +108,35 @@ def job_status(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/jobs")
+def list_jobs():
+    """Retrieve all previously uploaded documents."""
+    return get_all_jobs()
+
+
+@app.get("/job/{job_id}/chapters")
+def job_chapters(job_id: str):
+    """Return detected chapters for a processed file."""
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return get_book_chapters(job_id)
+
+
+@app.get("/job/{job_id}/file")
+def job_file(job_id: str):
+    """Return the original uploaded file for viewer rendering."""
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    storage_key = _extract_storage_key(job["storage_path"])
+    try:
+        file_bytes = storage.download(storage_key)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to fetch file: {exc}") from exc
+
+    media_type = mimetypes.guess_type(job["filename"])[0] or "application/octet-stream"
+    headers = {"Content-Disposition": f'inline; filename="{job["filename"]}"'}
+    return Response(content=file_bytes, media_type=media_type, headers=headers)
