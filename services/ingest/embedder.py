@@ -4,14 +4,25 @@ import io
 import json
 import os
 import re
+from decimal import Decimal
 from typing import List, Dict, Any
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from openai import OpenAI
 from pypdf import PdfReader
 
+from pipeline_config import (
+    CHAPTER_MODEL,
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    EMBED_BATCH_SIZE,
+    EMBED_MODEL,
+    MAX_CHAPTER_SAMPLE_PAGES,
+)
+from store_helpers import build_vectors, mark_job_completed, upsert_chapters
 from vector_store import upsert_vectors
-from db import set_status, JobStatus, get_db_context, Job, BookChapter
+from db import set_status, JobStatus
+from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost
 
 # ---------------------------------------------------------------------------
 # Clients (module-level singletons — instantiated once per worker process)
@@ -19,12 +30,46 @@ from db import set_status, JobStatus, get_db_context, Job, BookChapter
 
 _openai_client: OpenAI | None = None
 
-EMBED_MODEL = os.environ.get("INGEST_EMBED_MODEL", "text-embedding-3-large")
-EMBED_BATCH_SIZE = 200  # stay well below the 2 048 input limit
-CHUNK_SIZE = int(os.environ.get("INGEST_CHUNK_SIZE", "350"))
-CHUNK_OVERLAP = int(os.environ.get("INGEST_CHUNK_OVERLAP", "70"))
-CHAPTER_MODEL = os.environ.get("INGEST_CHAPTER_MODEL", "gpt-4o-mini")
-MAX_CHAPTER_SAMPLE_PAGES = int(os.environ.get("INGEST_MAX_CHAPTER_SAMPLE_PAGES", "180"))
+
+class _IngestCostTracker:
+    def __init__(self, file_id: str):
+        self.file_id = file_id
+        self.total = Decimal("0")
+
+    def add_chat(self, kind: str, model: str, usage: Any, meta: dict[str, Any] | None = None) -> None:
+        prompt_tokens, completion_tokens, total_tokens = parse_usage_tokens(usage)
+        usd = compute_chat_cost(model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+        self.total += usd
+        record_cost(
+            service="ingest",
+            kind=kind,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_usd=usd,
+            file_id=self.file_id,
+            meta=meta or {},
+        )
+
+    def add_embedding(self, kind: str, model: str, usage: Any, meta: dict[str, Any] | None = None) -> None:
+        prompt_tokens, completion_tokens, total_tokens = parse_usage_tokens(usage)
+        usd = compute_embedding_cost(model=model, total_tokens=total_tokens)
+        self.total += usd
+        record_cost(
+            service="ingest",
+            kind=kind,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_usd=usd,
+            file_id=self.file_id,
+            meta=meta or {},
+        )
+
+    def total_usd(self) -> float:
+        return float(self.total)
 
 
 def _get_openai() -> OpenAI:
@@ -106,7 +151,11 @@ def _normalize_chapter_starts(
     return chapters
 
 
-def _chapter_starts_from_llm(page_samples: list[tuple[int, str]], total_pages: int) -> list[tuple[str, int]]:
+def _chapter_starts_from_llm(
+    page_samples: list[tuple[int, str]],
+    total_pages: int,
+    cost_tracker: _IngestCostTracker | None = None,
+) -> list[tuple[str, int]]:
     if not page_samples or not os.environ.get("OPENAI_API_KEY"):
         return []
 
@@ -141,6 +190,13 @@ def _chapter_starts_from_llm(page_samples: list[tuple[int, str]], total_pages: i
                 },
             ],
         )
+        if cost_tracker is not None:
+            cost_tracker.add_chat(
+                kind="chapter",
+                model=CHAPTER_MODEL,
+                usage=getattr(completion, "usage", None),
+                meta={"reason": "chapter_detection"},
+            )
     except Exception:
         return []
 
@@ -168,10 +224,15 @@ def _chapter_starts_from_llm(page_samples: list[tuple[int, str]], total_pages: i
     return starts
 
 
-def _extract_chapters(reader: PdfReader, page_samples: list[tuple[int, str]], total_pages: int) -> list[dict[str, int | str]]:
+def _extract_chapters(
+    reader: PdfReader,
+    page_samples: list[tuple[int, str]],
+    total_pages: int,
+    cost_tracker: _IngestCostTracker | None = None,
+) -> list[dict[str, int | str]]:
     starts = _outline_entries(reader)
     if len(starts) < 2:
-        starts = _chapter_starts_from_llm(page_samples, total_pages)
+        starts = _chapter_starts_from_llm(page_samples, total_pages, cost_tracker=cost_tracker)
     chapters = _normalize_chapter_starts(starts, total_pages)
     if chapters:
         return chapters
@@ -194,7 +255,11 @@ def _chapter_for_page(chapters: list[dict[str, int | str]], page_number: int) ->
     return 1
 
 
-def _extract_documents(file_bytes: bytes, filename: str) -> tuple[List[Dict[str, Any]], list[dict[str, int | str]]]:
+def _extract_documents(
+    file_bytes: bytes,
+    filename: str,
+    cost_tracker: _IngestCostTracker | None = None,
+) -> tuple[List[Dict[str, Any]], list[dict[str, int | str]]]:
     """
     Return page-aware documents and chapter metadata.
     For PDFs, each page is a source document.
@@ -226,7 +291,7 @@ def _extract_documents(file_bytes: bytes, filename: str) -> tuple[List[Dict[str,
         if not docs:
             raise ValueError("PDF appears to be empty or image-only (no extractable text).")
 
-        chapters = _extract_chapters(reader, samples, total_pages)
+        chapters = _extract_chapters(reader, samples, total_pages, cost_tracker=cost_tracker)
         for doc in docs:
             page_number = int(doc["metadata"].get("page_number", 1))
             doc["metadata"]["chapter_number"] = _chapter_for_page(chapters, page_number)
@@ -298,7 +363,10 @@ def _chunk_documents(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # Step 4 — Batch embedding
 # ---------------------------------------------------------------------------
 
-def _embed_chunks(chunks: List[str]) -> List[List[float]]:
+def _embed_chunks(
+    chunks: List[str],
+    cost_tracker: _IngestCostTracker | None = None,
+) -> List[List[float]]:
     """Return embeddings for all chunks, batching to avoid API limits."""
     client = _get_openai()
     all_embeddings: List[List[float]] = []
@@ -309,6 +377,13 @@ def _embed_chunks(chunks: List[str]) -> List[List[float]]:
             model=EMBED_MODEL,
             input=batch,
         )
+        if cost_tracker is not None:
+            cost_tracker.add_embedding(
+                kind="embedding",
+                model=EMBED_MODEL,
+                usage=getattr(response, "usage", None),
+                meta={"batch_size": len(batch)},
+            )
         # Preserve order — the API returns items in the same order as input
         batch_embeddings = [item.embedding for item in response.data]
         all_embeddings.extend(batch_embeddings)
@@ -332,67 +407,43 @@ def process_and_store(
     Raises ValueError for unsupported formats / empty content.
     """
     try:
+        cost_tracker = _IngestCostTracker(file_id=file_id)
         # 0. Mark job as PROCESSING
         set_status(file_id, JobStatus.PROCESSING)
 
         # 1. Extract
-        documents, chapters = _extract_documents(file_bytes, filename)
+        documents, chapters = _extract_documents(file_bytes, filename, cost_tracker=cost_tracker)
 
         # 2. Chunk
         chunks = _chunk_documents(documents)
         chunk_texts = [chunk["text"] for chunk in chunks]
 
         # 3. Embed
-        embeddings = _embed_chunks(chunk_texts)
+        embeddings = _embed_chunks(chunk_texts, cost_tracker=cost_tracker)
 
-        # 4. Build vectors matching the Pinecone schema
-        vectors = [
-            {
-                "id": f"{file_id}_{idx}",
-                "values": embedding,
-                "metadata": {
-                    "file_id": file_id,
-                    "chunk_index": idx,
-                    "text": chunk["text"],
-                    "filename": filename,
-                    "source": chunk["metadata"].get("source", filename),
-                    "page_number": chunk["metadata"].get("page_number"),
-                    "page_label": chunk["metadata"].get("page_label"),
-                    "chapter_number": chunk["metadata"].get("chapter_number"),
-                },
-            }
-            for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings))
-        ]
+        # 4. Build vectors matching the vector store schema
+        vectors = build_vectors(file_id=file_id, filename=filename, chunks=chunks, embeddings=embeddings)
 
         # 5. Upsert vectors
         upsert_vectors(vectors, namespace="documents")
 
         # 6. Upsert chapters for this file
-        with get_db_context() as db:
-            db.query(BookChapter).filter(BookChapter.file_id == file_id).delete(
-                synchronize_session=False
-            )
-            for chapter in chapters:
-                db.add(
-                    BookChapter(
-                        id=f"{file_id}_{chapter['number']}",
-                        file_id=file_id,
-                        number=int(chapter["number"]),
-                        title=str(chapter["title"]),
-                        start_page=int(chapter["start_page"]),
-                        end_page=int(chapter["end_page"]),
-                    )
-                )
+        upsert_chapters(file_id=file_id, chapters=chapters)
 
         # 7. Mark job as COMPLETED and save the result
-        with get_db_context() as db:
-            job = db.query(Job).filter(Job.id == file_id).first()
-            if job:
-                job.status = JobStatus.COMPLETED
-                job.result = f"Processed {len(chunks)} chunks"
+        mark_job_completed(
+            file_id=file_id,
+            chunk_count=len(chunks),
+            chapter_count=len(chapters),
+            cost_usd=cost_tracker.total_usd(),
+        )
 
-        return {"chunk_count": len(chunks), "chapter_count": len(chapters)}
+        return {
+            "chunk_count": len(chunks),
+            "chapter_count": len(chapters),
+            "cost_usd_total": cost_tracker.total_usd(),
+        }
     except Exception as e:
         # Mark job as FAILED
         set_status(file_id, JobStatus.FAILED, error=str(e))
-        raise e
+        raise

@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, String, Integer, DateTime, Text, Enum as SQLEnum
+from sqlalchemy import Column, String, Integer, DateTime, Text, Enum as SQLEnum, Numeric, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase
 
@@ -81,4 +81,60 @@ class BookChapter(Base):
         return (
             f"<BookChapter(file_id={self.file_id}, number={self.number}, "
             f"range={self.start_page}-{self.end_page})>"
+        )
+
+
+class ApiCostEvent(Base):
+    """Stores model-usage and estimated cost details per API request segment."""
+
+    __tablename__ = "api_cost_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    service = Column(String(64), nullable=False, index=True)
+    kind = Column(String(64), nullable=False)
+    model = Column(String(128), nullable=False)
+    prompt_tokens = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    total_tokens = Column(Integer, nullable=False, default=0)
+    cost_usd = Column(Numeric(16, 8), nullable=False, default=0)
+    file_id = Column(String(255), nullable=True, index=True)
+    meta = Column(JSONB, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_api_cost_events_service_created_at", "service", "created_at"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<ApiCostEvent(service={self.service}, kind={self.kind}, model={self.model}, "
+            f"tokens={self.total_tokens}, cost_usd={self.cost_usd})>"
+        )
+
+
+class SearchHistory(Base):
+    """Stores persisted search requests and generated responses."""
+
+    __tablename__ = "search_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    query = Column(Text, nullable=False)
+    file_id = Column(String(255), nullable=True, index=True)
+    scope = Column(String(64), nullable=False, default="factoid")
+    task = Column(String(64), nullable=False, default="qa")
+    style = Column(String(64), nullable=False, default="default")
+    language = Column(String(16), nullable=False, default="en")
+    answer = Column(Text, nullable=False, default="")
+    results_json = Column(JSONB, nullable=False, default=list)
+    cost_usd = Column(Numeric(16, 8), nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_search_history_file_created_at", "file_id", "created_at"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<SearchHistory(id={self.id}, file_id={self.file_id}, "
+            f"query={self.query[:40]!r})>"
         )

@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useMemo, useState } from 'react'
 import { cn } from '../lib/utils'
+import { useCost } from '../context/useCost'
 
 const navSections = [
   {
@@ -43,6 +44,10 @@ function RoleToggle() {
 }
 
 export default function LmsLayout() {
+  const { sessionTotalUsd, liveCostUsd, liveLabel } = useCost()
+  const formatUsd = (amount) => `$${Number(amount || 0).toFixed(4)}`
+  const isLive = typeof liveCostUsd === 'number'
+
   return (
     <div className="min-h-screen bg-transparent text-slate-100">
       <div className="flex min-h-screen">
@@ -88,7 +93,19 @@ export default function LmsLayout() {
           <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/60 px-6 py-4 backdrop-blur-sm">
             <div className="flex items-center justify-between">
               <p className="text-sm text-slate-300">Welcome back, Student</p>
-              <p className="text-xs text-slate-500">Auth is mocked for UI preview</p>
+              <div className="flex items-center gap-3">
+                <div className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
+                  <span>Session: {formatUsd(sessionTotalUsd)}</span>
+                  {isLive && (
+                    <span>
+                      {' '}
+                      · <span className="mr-1 inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-300" />
+                      Now: {formatUsd(liveCostUsd)} ({liveLabel || 'Request'})
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500">Auth is mocked for UI preview</p>
+              </div>
             </div>
           </header>
           <section className="p-6">

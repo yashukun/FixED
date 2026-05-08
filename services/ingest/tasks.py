@@ -1,6 +1,5 @@
 import logging
 import traceback
-from celery.exceptions import Ignore
 
 from db import get_job, set_status, JobStatus
 from storage import get_storage_backend

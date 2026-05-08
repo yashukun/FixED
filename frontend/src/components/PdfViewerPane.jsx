@@ -10,6 +10,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString()
 
+// Reserved for upcoming chapter-aware reading mode.
 export default function PdfViewerPane({ fileUrl, activePage, onPageChange }) {
   const [numPages, setNumPages] = useState(0)
   const pageNumber = Math.max(1, activePage || 1)

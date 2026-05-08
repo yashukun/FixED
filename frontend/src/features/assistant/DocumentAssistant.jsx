@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import BookUploader from '../../components/BookUploader'
 import ProcessingIndicator from '../../components/ProcessingIndicator'
 import SearchInterface from '../../components/SearchInterface'
@@ -6,17 +6,95 @@ import ResultsViewer from '../../components/ResultsViewer'
 import LibrarySidebar from '../../components/LibrarySidebar'
 import { api } from '../../services/api'
 import { Card } from '../../components/ui/card'
-
-const normalizeStatus = (status) => String(status || '').toLowerCase()
+import { normalizeStatus } from '../../lib/status'
+import { ErrorBanner } from '../../components/feedback'
+import { useCost } from '../../context/useCost'
 
 export default function DocumentAssistant() {
+  const TYPING_INTERVAL_MS = 30
   const [jobs, setJobs] = useState([])
   const [activeJob, setActiveJob] = useState(null)
   const [lastQuery, setLastQuery] = useState('')
   const [forceUploadMode, setForceUploadMode] = useState(false)
   const [appState, setAppState] = useState('IDLE')
   const [searchResults, setSearchResults] = useState(null)
+  const [searchHistory, setSearchHistory] = useState([])
   const [errorMsg, setErrorMsg] = useState('')
+  const searchAbortRef = useRef(null)
+  const typingQueueRef = useRef('')
+  const typingTimerRef = useRef(null)
+  const typingJobRef = useRef(0)
+  const tokenStreamStartedRef = useRef(false)
+  const doneStateRef = useRef(null)
+  const { startLive, setLive, commitLive, clearLive, addCost } = useCost()
+
+  const clearTypingState = useCallback(() => {
+    typingJobRef.current += 1
+    typingQueueRef.current = ''
+    tokenStreamStartedRef.current = false
+    doneStateRef.current = null
+    if (typingTimerRef.current) {
+      window.clearTimeout(typingTimerRef.current)
+      typingTimerRef.current = null
+    }
+  }, [])
+
+  const startTypingPump = useCallback(() => {
+    if (typingTimerRef.current) return
+    const runId = typingJobRef.current
+
+    const tick = () => {
+      if (typingJobRef.current !== runId) return
+      const queue = typingQueueRef.current
+      if (queue.length > 0) {
+        if (typingTimerRef.current) {
+          window.clearTimeout(typingTimerRef.current)
+        }
+        const step = queue.slice(0, 2)
+        typingQueueRef.current = queue.slice(2)
+        setSearchResults((prev) => ({
+          ...(prev || {}),
+          answer: `${prev?.answer || ''}${step}`,
+          results: prev?.results || [],
+          is_streaming: true,
+        }))
+        typingTimerRef.current = window.setTimeout(tick, TYPING_INTERVAL_MS)
+      } else {
+        const donePayload = doneStateRef.current
+        if (donePayload) {
+          if (typingTimerRef.current) {
+            window.clearTimeout(typingTimerRef.current)
+          }
+          doneStateRef.current = null
+          const restDone = { ...donePayload }
+          delete restDone.answer
+          setSearchResults((prev) => ({
+            ...(prev || {}),
+            ...restDone,
+            answer: prev?.answer || '',
+            is_streaming: false,
+          }))
+          typingTimerRef.current = null
+        } else {
+          typingTimerRef.current = window.setTimeout(tick, TYPING_INTERVAL_MS)
+        }
+      }
+    }
+
+    typingTimerRef.current = window.setTimeout(tick, TYPING_INTERVAL_MS)
+  }, [TYPING_INTERVAL_MS])
+
+  const fetchSearchHistory = useCallback(async (fileId) => {
+    try {
+      const rows = await api.getSearchHistory({
+        fileId,
+        limit: 20,
+      })
+      setSearchHistory(Array.isArray(rows) ? rows : [])
+    } catch {
+      // History should not block main assistant flow
+    }
+  }, [])
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -28,12 +106,13 @@ export default function DocumentAssistant() {
         if (readyJob) {
           setActiveJob(readyJob)
           setAppState('READY')
+          fetchSearchHistory(readyJob.id)
         }
       }
     } catch (err) {
       setErrorMsg(err.message)
     }
-  }, [activeJob, forceUploadMode])
+  }, [activeJob, forceUploadMode, fetchSearchHistory])
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
@@ -64,7 +143,11 @@ export default function DocumentAssistant() {
     setForceUploadMode(false)
     setAppState('READY')
     setActiveJob(job)
+    if (job?.cost_usd_total) {
+      addCost(job.cost_usd_total)
+    }
     fetchJobs()
+    fetchSearchHistory(job?.id)
   }
 
   const handleLibrarySelect = (job) => {
@@ -77,6 +160,7 @@ export default function DocumentAssistant() {
 
     if (status === 'completed') {
       setAppState('READY')
+      fetchSearchHistory(job.id)
     } else if (status === 'pending' || status === 'processing') {
       setAppState('PROCESSING')
     } else {
@@ -92,22 +176,96 @@ export default function DocumentAssistant() {
     setSearchResults(null)
     setErrorMsg('')
     setLastQuery('')
+    setSearchHistory([])
   }
 
   const searchInBook = async (query, overrides = {}) => {
     if (!activeJob?.id) return
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort()
+    }
+    clearTypingState()
+    const controller = new AbortController()
+    searchAbortRef.current = controller
     setErrorMsg('')
     setLastQuery(query)
+    startLive('Search')
+    setSearchResults({
+      answer: '',
+      results: [],
+      needs_clarification: false,
+      clarification_options: null,
+      is_streaming: true,
+    })
     try {
-      const data = await api.searchBook(query, activeJob.id, {
+      await api.searchBookStream(query, activeJob.id, {
         activePage: overrides.activePage ?? null,
         chapterNumber: overrides.chapterNumber ?? null,
+        signal: controller.signal,
+      }, {
+        onRetrieval: (evt) => {
+          setSearchResults((prev) => ({
+            ...(prev || {}),
+            answer: prev?.answer || '',
+            results: Array.isArray(evt?.results) ? evt.results : [],
+            is_streaming: true,
+          }))
+        },
+        onToken: (delta) => {
+          if (!delta) return
+          tokenStreamStartedRef.current = true
+          typingQueueRef.current += delta
+          startTypingPump()
+        },
+        onDone: (evt) => {
+          const finalAnswer = String(evt?.answer || '')
+          const donePayload = evt || {}
+          const restDone = { ...donePayload }
+          delete restDone.answer
+          setSearchResults((prev) => ({
+            ...(prev || {}),
+            ...restDone,
+            answer: prev?.answer || '',
+            is_streaming: true,
+          }))
+
+          // Fallback: if token stream didn't arrive, type from final answer payload.
+          if (!tokenStreamStartedRef.current && finalAnswer) {
+            typingQueueRef.current += finalAnswer
+          }
+          doneStateRef.current = donePayload
+          startTypingPump()
+          const explicitUsd = evt?.cost?.usd
+          if (typeof explicitUsd === 'number') {
+            commitLive(explicitUsd)
+          } else {
+            commitLive()
+          }
+          fetchSearchHistory(activeJob?.id)
+        },
+        onCost: (evt) => {
+          if (typeof evt?.usd === 'number') {
+            setLive(evt.usd)
+          }
+        },
       })
-      setSearchResults(data)
     } catch (err) {
-      setErrorMsg(err.message)
+      if (err.name !== 'AbortError') {
+        setErrorMsg(err.message)
+      }
+      clearLive()
+    } finally {
+      if (searchAbortRef.current === controller) {
+        searchAbortRef.current = null
+      }
     }
   }
+
+  useEffect(() => () => {
+    searchAbortRef.current?.abort()
+    clearTypingState()
+    clearLive()
+  }, [clearTypingState, clearLive])
 
   return (
     <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
@@ -119,8 +277,8 @@ export default function DocumentAssistant() {
       />
       <Card className="min-h-[560px]">
         {errorMsg && (
-          <div className="mb-4 rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
-            {errorMsg}
+          <div className="mb-4">
+            <ErrorBanner message={errorMsg} />
           </div>
         )}
 
@@ -175,12 +333,42 @@ export default function DocumentAssistant() {
               {searchResults && (
                 <ResultsViewer
                   searchData={searchResults}
+                  isStreaming={Boolean(searchResults.is_streaming)}
                   onSelectClarification={(chapterNumber) =>
                     lastQuery
                       ? searchInBook(lastQuery, { chapterNumber })
                       : undefined
                   }
                 />
+              )}
+
+              {searchHistory.length > 0 && (
+                <div className="rounded-xl border border-slate-800 bg-slate-900/65 p-4">
+                  <h4 className="mb-3 text-sm font-semibold text-slate-200">Recent Searches</h4>
+                  <div className="space-y-2">
+                    {searchHistory.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setSearchResults({
+                          answer: item.answer,
+                          results: item.results,
+                          cost: { usd: item.cost_usd, breakdown: [] },
+                          is_streaming: false,
+                        })}
+                        className="w-full rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-left transition hover:border-blue-500/40 hover:bg-slate-900"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="truncate text-sm text-slate-200">{item.query}</p>
+                          <span className="text-xs text-slate-500">
+                            ${Number(item.cost_usd || 0).toFixed(4)}
+                          </span>
+                        </div>
+                        <p className="mt-1 line-clamp-1 text-xs text-slate-400">{item.answer}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           </div>

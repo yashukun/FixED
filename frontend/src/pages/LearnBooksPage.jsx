@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useCallback } from 'react'
 import { api } from '../services/api'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { ErrorBanner, SpinnerState } from '../components/feedback'
+import { useAsyncResource } from '../hooks/useAsyncResource'
+import { isCompletedStatus } from '../lib/status'
 
 function BookList({ title, books }) {
   return (
@@ -17,7 +20,7 @@ function BookList({ title, books }) {
               <p className="font-medium text-white">{book.title}</p>
               <p className="text-xs text-slate-400">{book.subject} • {book.lastOpened}</p>
             </div>
-            <Badge variant={book.status === 'ready' ? 'success' : 'warning'}>{book.status}</Badge>
+            <Badge variant={isCompletedStatus(book.status) ? 'success' : 'warning'}>{book.status}</Badge>
           </div>
         ))}
       </CardContent>
@@ -26,29 +29,13 @@ function BookList({ title, books }) {
 }
 
 export default function LearnBooksPage() {
-  const [data, setData] = useState(null)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    let mounted = true
-    const load = async () => {
-      try {
-        const payload = await api.getLearnBooks()
-        if (mounted) setData(payload)
-      } catch (err) {
-        if (mounted) setError(err.message)
-      }
-    }
-    load()
-    return () => {
-      mounted = false
-    }
-  }, [])
+  const loadBooks = useCallback(() => api.getLearnBooks(), [])
+  const { data, error } = useAsyncResource(loadBooks)
 
   if (error) {
-    return <p className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p>
+    return <ErrorBanner message={error} />
   }
-  if (!data) return <div className="spinner" aria-label="Loading books" />
+  if (!data) return <SpinnerState label="Loading books" />
 
   return (
     <div className="space-y-6">

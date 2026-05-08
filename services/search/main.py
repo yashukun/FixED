@@ -2,44 +2,143 @@ import json
 import logging
 import os
 import re
+import uuid
+from decimal import Decimal
 from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
 from sqlalchemy import select
 
-from db import BookChapter, DocumentChunk, get_db_context, init_db
+from config import (
+    CHAPTER_SCOPE_LIMIT,
+    CHAT_MODEL,
+    DEFAULT_TOP_K,
+    EMBED_MODEL,
+    HYBRID_VECTOR_WEIGHT,
+    INTENT_MODEL,
+    MAX_RETRIEVAL_POOL,
+    MAX_TOP_K,
+    PAGE_SCOPE_LIMIT,
+    QDRANT_API_KEY,
+    QDRANT_COLLECTION,
+    QDRANT_URL,
+    RETRIEVAL_POOL_MULTIPLIER,
+    VECTOR_DB_PROVIDER,
+    WHOLE_BOOK_LIMIT,
+)
+from db import BookChapter, DocumentChunk, SearchHistory, get_db_context, init_db
+from guardrails import build_guardrail_answer
+from prompting import build_system_prompt, context_char_budget
+from text_utils import (
+    extract_quoted_phrases,
+    keyword_overlap_score,
+    quoted_phrase_boost,
+    tokenize,
+    trim_context,
+)
+from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost
 
 app = FastAPI(title="FixED - Search Service")
 logger = logging.getLogger(__name__)
 
-openai_client = None
-qdrant_client = None
+_openai_client = None
+_qdrant_client = None
 
-EMBED_MODEL = os.environ.get("SEARCH_EMBED_MODEL", "text-embedding-3-large")
-CHAT_MODEL = os.environ.get("SEARCH_CHAT_MODEL", "gpt-4o-mini")
-INTENT_MODEL = os.environ.get("SEARCH_INTENT_MODEL", CHAT_MODEL)
-DEFAULT_TOP_K = 5
-MAX_TOP_K = 20
-RETRIEVAL_POOL_MULTIPLIER = 5
-MAX_RETRIEVAL_POOL = 100
-WHOLE_BOOK_LIMIT = 400
-CHAPTER_SCOPE_LIMIT = 150
-PAGE_SCOPE_LIMIT = 60
-FACTOID_CONTEXT_CHARS = 1200
-CHAPTER_CONTEXT_CHARS = 1600
-WHOLE_BOOK_CONTEXT_CHARS = 1800
-HYBRID_VECTOR_WEIGHT = min(
-    max(float(os.environ.get("SEARCH_HYBRID_VECTOR_WEIGHT", "1.0")), 0.0),
-    1.0,
-)
-VECTOR_DB_PROVIDER = os.environ.get("VECTOR_DB_PROVIDER", "pgvector")
-QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
-QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", None)
-QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "document_chunks")
+
+class _CostTracker:
+    def __init__(self) -> None:
+        self._total = Decimal("0")
+        self._rows: list[CostBreakdown] = []
+
+    def add_chat(
+        self,
+        kind: str,
+        model: str,
+        usage: Any,
+        file_id: Optional[str] = None,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> None:
+        prompt_tokens, completion_tokens, total_tokens = parse_usage_tokens(usage)
+        usd_decimal = compute_chat_cost(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        self._append(
+            kind=kind,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            usd_decimal=usd_decimal,
+            file_id=file_id,
+            meta=meta,
+        )
+
+    def add_embedding(
+        self,
+        kind: str,
+        model: str,
+        usage: Any,
+        file_id: Optional[str] = None,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> None:
+        prompt_tokens, completion_tokens, total_tokens = parse_usage_tokens(usage)
+        usd_decimal = compute_embedding_cost(model=model, total_tokens=total_tokens)
+        self._append(
+            kind=kind,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            usd_decimal=usd_decimal,
+            file_id=file_id,
+            meta=meta,
+        )
+
+    def _append(
+        self,
+        kind: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        usd_decimal: Decimal,
+        file_id: Optional[str],
+        meta: Optional[dict[str, Any]],
+    ) -> None:
+        self._total += usd_decimal
+        row = CostBreakdown(
+            kind=kind,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            usd=float(usd_decimal),
+        )
+        self._rows.append(row)
+        record_cost(
+            service="search",
+            kind=kind,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_usd=usd_decimal,
+            file_id=file_id,
+            meta=meta or {},
+        )
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "usd": float(self._total),
+            "breakdown": [row.model_dump() for row in self._rows],
+        }
 
 
 class SearchRequest(BaseModel):
@@ -73,8 +172,18 @@ class ChapterOption(BaseModel):
 class SearchResponse(BaseModel):
     answer: str
     results: List[SearchResult]
+    cost: Optional[dict[str, Any]] = None
     needs_clarification: bool = False
     clarification_options: Optional[list[ChapterOption]] = None
+
+
+class CostBreakdown(BaseModel):
+    kind: str
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    usd: float = 0.0
 
 
 class RetrievalDebugResponse(BaseModel):
@@ -83,6 +192,20 @@ class RetrievalDebugResponse(BaseModel):
     top_k_requested: int
     result_count: int
     results: List[SearchResult]
+
+
+class SearchHistoryItem(BaseModel):
+    id: str
+    query: str
+    file_id: Optional[str] = None
+    scope: str
+    task: str
+    style: str
+    language: str
+    answer: str
+    results: List[SearchResult]
+    cost_usd: float = 0.0
+    created_at: str
 
 
 @app.on_event("startup")
@@ -95,51 +218,17 @@ def _normalized_provider() -> str:
 
 
 def get_openai_client() -> OpenAI:
-    global openai_client
-    if openai_client is None:
-        openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-    return openai_client
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+    return _openai_client
 
 
 def get_qdrant_client() -> QdrantClient:
-    global qdrant_client
-    if qdrant_client is None:
-        qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-    return qdrant_client
-
-
-def _tokenize(text: str) -> set[str]:
-    return set(re.findall(r"\b[a-z0-9]{3,}\b", text.lower()))
-
-
-def _keyword_overlap_score(query_tokens: set[str], text_content: str) -> float:
-    if not query_tokens:
-        return 0.0
-    chunk_tokens = _tokenize(text_content)
-    if not chunk_tokens:
-        return 0.0
-    overlap = len(query_tokens & chunk_tokens)
-    return overlap / max(len(query_tokens), 1)
-
-
-def _extract_quoted_phrases(query: str) -> list[str]:
-    phrases = re.findall(r"'([^']+)'|\"([^\"]+)\"", query)
-    cleaned: list[str] = []
-    for a, b in phrases:
-        candidate = (a or b).strip().lower()
-        if candidate:
-            cleaned.append(candidate)
-    return cleaned
-
-
-def _quoted_phrase_boost(phrases: list[str], text_content: str) -> float:
-    if not phrases:
-        return 0.0
-    lowered = text_content.lower()
-    matches = sum(1 for phrase in phrases if phrase in lowered)
-    if matches == 0:
-        return 0.0
-    return min(0.15, 0.05 * matches)
+    global _qdrant_client
+    if _qdrant_client is None:
+        _qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+    return _qdrant_client
 
 
 def _metadata_int(payload: dict[str, Any], key: str) -> Optional[int]:
@@ -173,13 +262,6 @@ def _build_location_hint(result: SearchResult) -> str:
     if result.page_number is not None:
         return f"Page {result.page_number} of {result.filename}"
     return f"{result.filename} (section around chunk {result.chunk_index})"
-
-
-def _trim_context(text_content: str, max_chars: int) -> str:
-    cleaned = " ".join(text_content.split())
-    if len(cleaned) <= max_chars:
-        return cleaned
-    return cleaned[: max_chars - 3] + "..."
 
 
 def _dedupe_results(results: list[SearchResult]) -> list[SearchResult]:
@@ -278,7 +360,12 @@ def _heuristic_intent(query: str) -> dict[str, Any]:
     }
 
 
-def _classify_query(query: str, chapters: list[ChapterOption]) -> dict[str, Any]:
+def _classify_query(
+    query: str,
+    chapters: list[ChapterOption],
+    cost_tracker: Optional[_CostTracker] = None,
+    file_id: Optional[str] = None,
+) -> dict[str, Any]:
     fallback = _heuristic_intent(query)
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -308,6 +395,14 @@ def _classify_query(query: str, chapters: list[ChapterOption]) -> dict[str, Any]
                 },
             ],
         )
+        if cost_tracker is not None:
+            cost_tracker.add_chat(
+                kind="intent",
+                model=INTENT_MODEL,
+                usage=getattr(completion, "usage", None),
+                file_id=file_id,
+                meta={"query_type": "intent_classification"},
+            )
         raw = completion.choices[0].message.content or ""
         match = re.search(r"\{[\s\S]*\}", raw)
         if not match:
@@ -381,14 +476,14 @@ def _retrieve_with_qdrant(
         hits = getattr(query_result, "points", query_result)
 
     chapter_focused_query = "chapter" in query_tokens
-    quoted_phrases = _extract_quoted_phrases(raw_query)
+    quoted_phrases = extract_quoted_phrases(raw_query)
     scored: list[SearchResult] = []
     for hit in hits:
         payload = hit.payload or {}
         text_content = payload.get("text", "") or ""
         vector_similarity = float(hit.score)
-        lexical_similarity = _keyword_overlap_score(query_tokens, text_content)
-        phrase_boost = _quoted_phrase_boost(quoted_phrases, text_content)
+        lexical_similarity = keyword_overlap_score(query_tokens, text_content)
+        phrase_boost = quoted_phrase_boost(quoted_phrases, text_content)
         vector_weight = HYBRID_VECTOR_WEIGHT if not chapter_focused_query else min(HYBRID_VECTOR_WEIGHT, 0.8)
         lexical_weight = 1.0 - vector_weight
         combined_score = (vector_weight * vector_similarity) + (lexical_weight * lexical_similarity) + phrase_boost
@@ -417,7 +512,7 @@ def _retrieve_with_pgvector(
         rows = db.execute(stmt).all()
 
     chapter_focused_query = "chapter" in query_tokens
-    quoted_phrases = _extract_quoted_phrases(raw_query)
+    quoted_phrases = extract_quoted_phrases(raw_query)
     scored: list[SearchResult] = []
     for chunk, dist in rows:
         metadata = chunk.metadata_ or {}
@@ -432,8 +527,8 @@ def _retrieve_with_pgvector(
             continue
 
         vector_similarity = 1.0 - float(dist if dist is not None else 0.0)
-        lexical_similarity = _keyword_overlap_score(query_tokens, chunk.text_content)
-        phrase_boost = _quoted_phrase_boost(quoted_phrases, chunk.text_content)
+        lexical_similarity = keyword_overlap_score(query_tokens, chunk.text_content)
+        phrase_boost = quoted_phrase_boost(quoted_phrases, chunk.text_content)
         vector_weight = HYBRID_VECTOR_WEIGHT if not chapter_focused_query else min(HYBRID_VECTOR_WEIGHT, 0.8)
         lexical_weight = 1.0 - vector_weight
         combined_score = (vector_weight * vector_similarity) + (lexical_weight * lexical_similarity) + phrase_boost
@@ -473,12 +568,12 @@ def _retrieve_scope_chunks_qdrant(
         with_payload=True,
         with_vectors=False,
     )
-    quoted_phrases = _extract_quoted_phrases(raw_query)
+    quoted_phrases = extract_quoted_phrases(raw_query)
     rows: list[SearchResult] = []
     for point in points:
         payload = point.payload or {}
-        lexical_similarity = _keyword_overlap_score(query_tokens, payload.get("text", "") or "")
-        phrase_boost = _quoted_phrase_boost(quoted_phrases, payload.get("text", "") or "")
+        lexical_similarity = keyword_overlap_score(query_tokens, payload.get("text", "") or "")
+        phrase_boost = quoted_phrase_boost(quoted_phrases, payload.get("text", "") or "")
         rows.append(_as_search_result(payload, str(getattr(point, "id", "")), lexical_similarity + phrase_boost))
     rows.sort(key=lambda row: (row.score, -row.chunk_index), reverse=True)
     return _dedupe_results(rows[:limit])
@@ -501,7 +596,7 @@ def _retrieve_scope_chunks_pgvector(
         )
         rows = db.execute(stmt).scalars().all()
 
-    quoted_phrases = _extract_quoted_phrases(raw_query)
+    quoted_phrases = extract_quoted_phrases(raw_query)
     results: list[SearchResult] = []
     for chunk in rows:
         metadata = chunk.metadata_ or {}
@@ -514,8 +609,8 @@ def _retrieve_scope_chunks_pgvector(
         if page_range and page_number is None:
             continue
 
-        lexical_similarity = _keyword_overlap_score(query_tokens, chunk.text_content)
-        phrase_boost = _quoted_phrase_boost(quoted_phrases, chunk.text_content)
+        lexical_similarity = keyword_overlap_score(query_tokens, chunk.text_content)
+        phrase_boost = quoted_phrase_boost(quoted_phrases, chunk.text_content)
         results.append(
             SearchResult(
                 chunk_id=chunk.id,
@@ -592,42 +687,6 @@ def _retrieve_factoid(
     )
 
 
-def _build_system_prompt(task: str, style: str, language: str) -> str:
-    task_instructions = {
-        "summarize": "Produce a compact but comprehensive summary and key takeaways.",
-        "explain": "Explain step-by-step with examples and simple wording when possible.",
-        "qa": "Answer directly and concisely.",
-        "generate_questions": "Generate practice questions from context. Include a short answer key at the end.",
-        "compare": "Present comparisons clearly. Use a markdown table when useful.",
-        "translate": f"Translate the requested content to {language}. Preserve meaning over literal wording.",
-        "mind_map": "Return a mind-map style nested bullet structure from the context.",
-        "quiz": "Generate a quiz with numbered questions and an answer key.",
-        "other": "Answer clearly using the available context.",
-    }
-    style_instructions = {
-        "beginner": "Write for a beginner student.",
-        "child": "Write in child-friendly language.",
-        "academic": "Use formal academic language.",
-        "default": "Use clear student-friendly language.",
-    }
-    return (
-        "You are a helpful student assistant for document QA.\n"
-        "Answer strictly from retrieved context and do not invent facts.\n"
-        "Always cite references using [Ref N] and include page/location guidance from that reference.\n"
-        "Never use the word 'chunk' in citations.\n"
-        f"Task behavior: {task_instructions.get(task, task_instructions['other'])}\n"
-        f"Style behavior: {style_instructions.get(style, style_instructions['default'])}"
-    )
-
-
-def _context_char_budget(scope: str) -> int:
-    if scope == "whole_book":
-        return WHOLE_BOOK_CONTEXT_CHARS
-    if scope in ("chapter", "page", "paragraph"):
-        return CHAPTER_CONTEXT_CHARS
-    return FACTOID_CONTEXT_CHARS
-
-
 def _resolve_scope(intent_scope: str) -> str:
     if intent_scope in {"whole_book", "chapter", "page", "paragraph"}:
         return intent_scope
@@ -668,21 +727,92 @@ def _infer_chapter_from_probe_results(
     return max(chapter_scores.items(), key=lambda item: item[1])[0]
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": "search"}
+def _serialize_model(model: Any) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    if hasattr(model, "dict"):
+        return model.dict()
+    return dict(model)
 
 
-@app.post("/search", response_model=SearchResponse)
-def search(req: SearchRequest):
+def _sse_event(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+
+def _results_to_payload(results: list[SearchResult]) -> list[dict[str, Any]]:
+    return [_serialize_model(row) for row in results]
+
+
+def _save_search_history(
+    query: str,
+    file_id: Optional[str],
+    scope: str,
+    task: str,
+    style: str,
+    language: str,
+    answer: str,
+    results: list[SearchResult],
+    cost_payload: dict[str, Any],
+) -> None:
+    with get_db_context() as db:
+        db.add(
+            SearchHistory(
+                query=query,
+                file_id=file_id,
+                scope=scope,
+                task=task,
+                style=style,
+                language=language,
+                answer=answer,
+                results_json=_results_to_payload(results),
+                cost_usd=Decimal(str(cost_payload.get("usd", 0.0))),
+            )
+        )
+
+
+def _history_item(row: SearchHistory) -> SearchHistoryItem:
+    parsed_results: list[SearchResult] = []
+    for item in (row.results_json or []):
+        try:
+            parsed_results.append(SearchResult(**item))
+        except Exception:
+            continue
+    return SearchHistoryItem(
+        id=str(row.id),
+        query=row.query,
+        file_id=row.file_id,
+        scope=row.scope,
+        task=row.task,
+        style=row.style,
+        language=row.language,
+        answer=row.answer,
+        results=parsed_results,
+        cost_usd=float(row.cost_usd or 0),
+        created_at=row.created_at.isoformat(),
+    )
+
+
+def _retrieve_for_request(
+    req: SearchRequest,
+) -> tuple[str, str, str, str, str, Optional[int], list[SearchResult], Optional[str], _CostTracker]:
+    cost_tracker = _CostTracker()
     query = req.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
+    guardrail_answer = build_guardrail_answer(query)
+    if guardrail_answer:
+        return query, "factoid", "qa", "default", "en", None, [], guardrail_answer, cost_tracker
+
     top_k = min(max(req.top_k, 1), MAX_TOP_K)
-    query_tokens = _tokenize(query)
+    query_tokens = tokenize(query)
     chapters = _fetch_chapters(req.file_id)
-    intent = _classify_query(query, chapters)
+    intent = _classify_query(
+        query,
+        chapters,
+        cost_tracker=cost_tracker,
+        file_id=req.file_id,
+    )
     scope = _resolve_scope(str(intent.get("scope", "factoid")))
     task = str(intent.get("task", "qa"))
     style = str(intent.get("style", "default"))
@@ -693,6 +823,13 @@ def search(req: SearchRequest):
     if scope == "chapter" and req.file_id and chapters and resolved_chapter is None:
         try:
             emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query])
+            cost_tracker.add_embedding(
+                kind="embedding",
+                model=EMBED_MODEL,
+                usage=getattr(emb_resp, "usage", None),
+                file_id=req.file_id,
+                meta={"reason": "chapter_probe"},
+            )
             query_embedding = emb_resp.data[0].embedding
             probe_results = _retrieve_factoid(
                 query_embedding=query_embedding,
@@ -705,8 +842,6 @@ def search(req: SearchRequest):
         except Exception:
             resolved_chapter = None
 
-    # If chapter cannot be inferred, continue with regular factoid retrieval
-    # instead of blocking the user with a clarification requirement.
     if scope == "chapter" and resolved_chapter is None:
         scope = "factoid"
 
@@ -742,6 +877,13 @@ def search(req: SearchRequest):
         else:
             if query_embedding is None:
                 emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query])
+                cost_tracker.add_embedding(
+                    kind="embedding",
+                    model=EMBED_MODEL,
+                    usage=getattr(emb_resp, "usage", None),
+                    file_id=req.file_id,
+                    meta={"reason": "search_retrieval"},
+                )
                 query_embedding = emb_resp.data[0].embedding
             results = _retrieve_factoid(
                 query_embedding=query_embedding,
@@ -755,16 +897,14 @@ def search(req: SearchRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Vector retrieval failed: {str(exc)}")
 
-    if not results:
-        return SearchResponse(
-            answer="I could not find relevant content in the indexed documents for this query.",
-            results=[],
-        )
-
     ordered_results = sorted(results, key=lambda row: (row.score, -row.chunk_index), reverse=True)
-    budget = _context_char_budget(scope)
+    return query, scope, task, style, language, resolved_chapter, ordered_results, None, cost_tracker
+
+
+def _build_context_text(results: list[SearchResult], scope: str) -> str:
+    budget = context_char_budget(scope)
     context_blocks = []
-    for idx, row in enumerate(ordered_results, start=1):
+    for idx, row in enumerate(results, start=1):
         location = _build_location_hint(row)
         context_blocks.append(
             "\n".join(
@@ -774,13 +914,42 @@ def search(req: SearchRequest):
                     f"Filename: {row.filename}",
                     f"File ID: {row.file_id}",
                     f"Similarity Score: {row.score:.4f}",
-                    f"Content: {_trim_context(row.text_content, max_chars=budget)}",
+                    f"Content: {trim_context(row.text_content, max_chars=budget)}",
                 ]
             )
         )
+    return "\n\n".join(context_blocks)
 
-    system_prompt = _build_system_prompt(task=task, style=style, language=language)
-    context_text = "\n\n".join(context_blocks)
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "search"}
+
+
+@app.post("/search", response_model=SearchResponse)
+def search(req: SearchRequest):
+    (
+        query,
+        scope,
+        task,
+        style,
+        language,
+        resolved_chapter,
+        ordered_results,
+        guardrail_answer,
+        cost_tracker,
+    ) = _retrieve_for_request(req)
+    if guardrail_answer is not None:
+        return SearchResponse(answer=guardrail_answer, results=[], cost=cost_tracker.summary())
+    if not ordered_results:
+        return SearchResponse(
+            answer="I could not find relevant content in the indexed documents for this query.",
+            results=[],
+            cost=cost_tracker.summary(),
+        )
+
+    system_prompt = build_system_prompt(task=task, style=style, language=language)
+    context_text = _build_context_text(ordered_results, scope)
     try:
         completion = get_openai_client().chat.completions.create(
             model=CHAT_MODEL,
@@ -798,6 +967,13 @@ def search(req: SearchRequest):
                 },
             ],
         )
+        cost_tracker.add_chat(
+            kind="chat",
+            model=CHAT_MODEL,
+            usage=getattr(completion, "usage", None),
+            file_id=req.file_id,
+            meta={"reason": "final_answer"},
+        )
         answer = completion.choices[0].message.content or (
             "I could not generate an answer from the retrieved document context."
         )
@@ -805,7 +981,156 @@ def search(req: SearchRequest):
         logger.exception("LLM answer generation failed: %s", exc)
         answer = "Sorry, I encountered an error while generating the answer from the document."
 
-    return SearchResponse(answer=answer, results=ordered_results)
+    cost_payload = cost_tracker.summary()
+    _save_search_history(
+        query=query,
+        file_id=req.file_id,
+        scope=scope,
+        task=task,
+        style=style,
+        language=language,
+        answer=answer,
+        results=ordered_results,
+        cost_payload=cost_payload,
+    )
+    return SearchResponse(answer=answer, results=ordered_results, cost=cost_payload)
+
+
+@app.post("/search/stream")
+def search_stream(req: SearchRequest):
+    def event_generator():
+        try:
+            (
+                query,
+                scope,
+                task,
+                style,
+                language,
+                resolved_chapter,
+                ordered_results,
+                guardrail_answer,
+                cost_tracker,
+            ) = _retrieve_for_request(req)
+            if guardrail_answer is not None:
+                yield _sse_event("token", {"delta": guardrail_answer})
+                yield _sse_event("cost", cost_tracker.summary())
+                yield _sse_event("done", {"answer": guardrail_answer, "results": [], "cost": cost_tracker.summary()})
+                return
+
+            if not ordered_results:
+                no_result_answer = "I could not find relevant content in the indexed documents for this query."
+                yield _sse_event("token", {"delta": no_result_answer})
+                yield _sse_event("cost", cost_tracker.summary())
+                yield _sse_event("done", {"answer": no_result_answer, "results": [], "cost": cost_tracker.summary()})
+                return
+
+            yield _sse_event(
+                "retrieval",
+                {"results": [_serialize_model(row) for row in ordered_results]},
+            )
+
+            system_prompt = build_system_prompt(task=task, style=style, language=language)
+            context_text = _build_context_text(ordered_results, scope)
+            stream = get_openai_client().chat.completions.create(
+                model=CHAT_MODEL,
+                temperature=0.0,
+                stream=True,
+                stream_options={"include_usage": True},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Retrieved Context:\n{context_text}\n\n"
+                            f"Question: {query}\n"
+                            f"Resolved scope: {scope}\n"
+                            f"Resolved chapter number: {resolved_chapter}"
+                        ),
+                    },
+                ],
+            )
+            full_answer = ""
+            stream_usage = None
+            for chunk in stream:
+                token = ""
+                if chunk.choices:
+                    token = chunk.choices[0].delta.content or ""
+                if token:
+                    full_answer += token
+                    yield _sse_event("token", {"delta": token})
+                if getattr(chunk, "usage", None) is not None:
+                    stream_usage = chunk.usage
+
+            if not full_answer:
+                full_answer = "I could not generate an answer from the retrieved document context."
+            cost_tracker.add_chat(
+                kind="chat",
+                model=CHAT_MODEL,
+                usage=stream_usage,
+                file_id=req.file_id,
+                meta={"reason": "final_answer_stream"},
+            )
+            cost_payload = cost_tracker.summary()
+            yield _sse_event("cost", cost_payload)
+            _save_search_history(
+                query=query,
+                file_id=req.file_id,
+                scope=scope,
+                task=task,
+                style=style,
+                language=language,
+                answer=full_answer,
+                results=ordered_results,
+                cost_payload=cost_payload,
+            )
+            yield _sse_event(
+                "done",
+                {
+                    "answer": full_answer,
+                    "results": [_serialize_model(row) for row in ordered_results],
+                    "cost": cost_payload,
+                },
+            )
+        except HTTPException as exc:
+            yield _sse_event("error", {"message": str(exc.detail), "status_code": exc.status_code})
+        except Exception as exc:
+            logger.exception("Search streaming failed: %s", exc)
+            yield _sse_event("error", {"message": "Sorry, I encountered an error while streaming the answer."})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/history/search", response_model=list[SearchHistoryItem])
+def search_history(file_id: Optional[str] = None, limit: int = 25, offset: int = 0):
+    safe_limit = min(max(int(limit), 1), 100)
+    safe_offset = max(int(offset), 0)
+    with get_db_context() as db:
+        stmt = select(SearchHistory).order_by(SearchHistory.created_at.desc())
+        if file_id:
+            stmt = stmt.where(SearchHistory.file_id == file_id)
+        rows = db.execute(stmt.offset(safe_offset).limit(safe_limit)).scalars().all()
+        return [_history_item(row) for row in rows]
+
+
+@app.get("/history/search/{history_id}", response_model=SearchHistoryItem)
+def search_history_by_id(history_id: str):
+    try:
+        parsed_id = uuid.UUID(history_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid history id format.")
+    with get_db_context() as db:
+        row = db.get(SearchHistory, parsed_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Search history item not found.")
+        return _history_item(row)
 
 
 @app.post("/debug/retrieval", response_model=RetrievalDebugResponse)
@@ -815,7 +1140,7 @@ def debug_retrieval(req: SearchRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
     top_k = min(max(req.top_k, 1), MAX_TOP_K)
-    query_tokens = _tokenize(query)
+    query_tokens = tokenize(query)
     page_range = None
     if req.active_page:
         page_range = (max(req.active_page - 1, 1), req.active_page + 1)

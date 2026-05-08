@@ -1,6 +1,6 @@
 import { Button } from './ui/button'
 
-export default function ResultsViewer({ searchData, onSelectClarification }) {
+export default function ResultsViewer({ searchData, onSelectClarification, isStreaming = false }) {
   if (!searchData) {
     return (
       <div className="mt-10 text-center text-sm text-slate-500">
@@ -31,13 +31,12 @@ export default function ResultsViewer({ searchData, onSelectClarification }) {
     )
   }
 
-  if (!searchData.results || searchData.results.length === 0) {
-    return (
-      <div className="mt-10 text-center text-sm text-slate-500">
-        No results found. Try a different query.
-      </div>
-    )
-  }
+  const hasResults = Array.isArray(searchData.results) && searchData.results.length > 0
+  const confidenceValues = hasResults ? searchData.results.map((row) => Number(row.score) || 0) : []
+  const topConfidence = confidenceValues.length ? Math.max(...confidenceValues) : null
+  const avgConfidence = confidenceValues.length
+    ? confidenceValues.reduce((sum, score) => sum + score, 0) / confidenceValues.length
+    : null
 
   return (
     <div className="mt-8 flex w-full max-w-4xl flex-col gap-4">
@@ -51,24 +50,48 @@ export default function ResultsViewer({ searchData, onSelectClarification }) {
         </h3>
         <div className="leading-7 text-slate-100">
           {searchData.answer}
+          {isStreaming && <span className="ml-1 inline-block animate-pulse text-blue-300">|</span>}
         </div>
       </div>
 
-      <h4 className="mt-2 text-sm font-medium text-slate-400">Sources:</h4>
-      
-      {/* Source Chunks Section */}
-      {searchData.results.map((result, index) => (
-        <div
-          key={result.chunk_id || index}
-          className="rounded-xl border border-slate-800 bg-slate-900/65 p-4"
-        >
-          <div className="mb-2 flex items-center justify-between">
-            <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-300">Confidence: {(result.score * 100).toFixed(1)}%</span>
-            <span className="text-xs text-slate-500">{result.filename}</span>
+      {hasResults && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+          <h4 className="mb-2 text-sm font-semibold text-emerald-200">Confidence</h4>
+          <div className="flex flex-wrap gap-3 text-sm text-emerald-100">
+            <span className="rounded-full bg-emerald-500/20 px-3 py-1">
+              Top: {((topConfidence || 0) * 100).toFixed(1)}%
+            </span>
+            <span className="rounded-full bg-emerald-500/20 px-3 py-1">
+              Avg: {((avgConfidence || 0) * 100).toFixed(1)}%
+            </span>
+            <span className="rounded-full bg-emerald-500/20 px-3 py-1">
+              Sources: {searchData.results.length}
+            </span>
           </div>
-          <p className="text-sm text-slate-200">{result.text_content}</p>
         </div>
-      ))}
+      )}
+
+      {hasResults ? (
+        <>
+          <h4 className="mt-2 text-sm font-medium text-slate-400">Sources:</h4>
+          {searchData.results.map((result, index) => (
+            <div
+              key={result.chunk_id || index}
+              className="rounded-xl border border-slate-800 bg-slate-900/65 p-4"
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-300">Confidence: {(result.score * 100).toFixed(1)}%</span>
+                <span className="text-xs text-slate-500">{result.filename}</span>
+              </div>
+              <p className="text-sm text-slate-200">{result.text_content}</p>
+            </div>
+          ))}
+        </>
+      ) : (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/65 p-4 text-sm text-slate-300">
+          No source excerpts for this response yet. Ask a book-specific question to see supporting passages.
+        </div>
+      )}
     </div>
   )
 }

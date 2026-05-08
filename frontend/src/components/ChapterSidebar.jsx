@@ -1,5 +1,6 @@
 import { Button } from './ui/button'
 
+// Reserved for upcoming chapter-aware reading mode.
 export default function ChapterSidebar({ chapters, selectedChapterNumber, onSelectChapter, onClearChapter }) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/70">

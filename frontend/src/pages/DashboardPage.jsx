@@ -1,34 +1,20 @@
-import { useEffect, useState } from 'react'
+import { useCallback } from 'react'
 import { api } from '../services/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
+import { ErrorBanner, SpinnerState } from '../components/feedback'
+import { useAsyncResource } from '../hooks/useAsyncResource'
 
 export default function DashboardPage() {
-  const [overview, setOverview] = useState(null)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    let mounted = true
-    const load = async () => {
-      try {
-        const data = await api.getDashboardOverview()
-        if (mounted) setOverview(data)
-      } catch (err) {
-        if (mounted) setError(err.message)
-      }
-    }
-    load()
-    return () => {
-      mounted = false
-    }
-  }, [])
+  const loadOverview = useCallback(() => api.getDashboardOverview(), [])
+  const { data: overview, error } = useAsyncResource(loadOverview)
 
   if (error) {
-    return <p className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p>
+    return <ErrorBanner message={error} />
   }
 
   if (!overview) {
-    return <div className="spinner" aria-label="Loading dashboard data" />
+    return <SpinnerState label="Loading dashboard data" />
   }
 
   return (

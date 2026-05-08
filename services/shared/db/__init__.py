@@ -6,13 +6,14 @@ Exports: engine, SessionLocal, get_db, get_db_context,
 """
 
 import os
+import json
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import sessionmaker
 
-from .models import Base, Job, JobStatus, DocumentChunk, BookChapter  # noqa: F401 — re-export
+from .models import Base, Job, JobStatus, DocumentChunk, BookChapter, ApiCostEvent, SearchHistory  # noqa: F401 — re-export
 
 # ── Engine ───────────────────────────────────────────────────────────────
 
@@ -58,7 +59,34 @@ def get_db_context():
 
 # ── DB operations ────────────────────────────────────────────────────────
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+
+def _serialize_job(job: Job) -> dict:
+    result_payload = None
+    cost_usd_total = None
+    if job.result:
+        try:
+            result_payload = json.loads(job.result)
+            if isinstance(result_payload, dict):
+                value = result_payload.get("cost_usd_total")
+                if value is not None:
+                    cost_usd_total = float(value)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            result_payload = None
+    return {
+        "id": str(job.id),
+        "status": job.status.value if hasattr(job.status, "value") else job.status,
+        "filename": job.filename,
+        "storage_path": job.storage_path,
+        "file_size": job.file_size,
+        "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
+        "error_message": job.error_message,
+        "result": job.result,
+        "result_payload": result_payload,
+        "cost_usd_total": cost_usd_total,
+    }
 
 def init_db():
     """Create all tables that don't exist yet."""
@@ -87,17 +115,7 @@ def get_job(job_id: str) -> dict | None:
     with get_db_context() as db:
         try:
             job = db.query(Job).filter(Job.id == job_id).one()
-            return {
-                "id": str(job.id),
-                "status": job.status.value if hasattr(job.status, "value") else job.status,
-                "filename": job.filename,
-                "storage_path": job.storage_path,
-                "file_size": job.file_size,
-                "created_at": job.created_at.isoformat(),
-                "updated_at": job.updated_at.isoformat(),
-                "error_message": job.error_message,
-                "result": job.result,
-            }
+            return _serialize_job(job)
         except NoResultFound:
             return None
 
@@ -106,20 +124,7 @@ def get_all_jobs() -> list[dict]:
     """Return all jobs ordered by created_at descending."""
     with get_db_context() as db:
         jobs = db.query(Job).order_by(Job.created_at.desc()).all()
-        return [
-            {
-                "id": str(job.id),
-                "status": job.status.value if hasattr(job.status, "value") else job.status,
-                "filename": job.filename,
-                "storage_path": job.storage_path,
-                "file_size": job.file_size,
-                "created_at": job.created_at.isoformat(),
-                "updated_at": job.updated_at.isoformat(),
-                "error_message": job.error_message,
-                "result": job.result,
-            }
-            for job in jobs
-        ]
+        return [_serialize_job(job) for job in jobs]
 
 
 def get_book_chapters(file_id: str) -> list[dict]:

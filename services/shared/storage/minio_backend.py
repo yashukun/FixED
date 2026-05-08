@@ -1,12 +1,15 @@
 """MinIO implementation of StorageBackend."""
 
 import io
+import logging
 import os
 
 from minio import Minio
 from minio.error import S3Error
 
 from . import StorageBackend
+
+logger = logging.getLogger(__name__)
 
 
 class MinIOBackend(StorageBackend):
@@ -39,9 +42,9 @@ class MinIOBackend(StorageBackend):
         try:
             if not self.client.bucket_exists(self.bucket):
                 self.client.make_bucket(self.bucket)
-                print(f"[storage] Created bucket: {self.bucket}")
+                logger.info("Created bucket: %s", self.bucket)
         except S3Error as e:
-            print(f"[storage] Warning — bucket check failed: {e}")
+            logger.warning("Bucket check failed: %s", e)
 
     # --- StorageBackend interface ---
 
