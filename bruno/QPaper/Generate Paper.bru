@@ -1,0 +1,26 @@
+meta {
+  name: Generate Paper
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8003/generate
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "doc_id": "9b3aa231-fcda-4779-8ac7-90dfff93a24b",
+    "topic": "Photosynthesis",
+    "total_marks": 70,
+    "distribution": {
+      "mcq": 70,
+      "subjective": 20,
+      "true_false": 10
+    },
+    "mode": "official",
+    "top_k": 20
+  }
+}

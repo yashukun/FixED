@@ -13,7 +13,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import sessionmaker
 
-from .models import Base, Job, JobStatus, DocumentChunk, BookChapter, ApiCostEvent, SearchHistory  # noqa: F401 — re-export
+from .models import (  # noqa: F401 — re-export
+    ApiCostEvent,
+    Base,
+    BookChapter,
+    DocumentChunk,
+    GeneratedPaper,
+    Job,
+    JobStatus,
+    SearchHistory,
+)
 
 # ── Engine ───────────────────────────────────────────────────────────────
 

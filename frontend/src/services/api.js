@@ -1,6 +1,7 @@
 const GATEWAY_API = import.meta.env.VITE_GATEWAY_API || '/api/gateway'
 const INGEST_API = import.meta.env.VITE_INGEST_API || '/api/ingest'
 const SEARCH_API = import.meta.env.VITE_SEARCH_API || '/api/search'
+const QPAPER_API = import.meta.env.VITE_QPAPER_API || '/api/qpaper'
 
 const parseJsonSafe = async (res) => {
   try {
@@ -12,7 +13,18 @@ const parseJsonSafe = async (res) => {
 
 const getErrorMessage = async (res, fallback) => {
   const json = await parseJsonSafe(res)
-  if (json?.detail) return json.detail
+  if (json?.detail) {
+    if (typeof json.detail === 'string') return json.detail
+    if (json.detail?.message) {
+      const errors = Array.isArray(json.detail.errors) ? ` (${json.detail.errors.join('; ')})` : ''
+      return `${json.detail.message}${errors}`
+    }
+    try {
+      return JSON.stringify(json.detail)
+    } catch {
+      return fallback
+    }
+  }
   if (json?.message) return json.message
 
   try {
@@ -232,5 +244,32 @@ export const api = {
     }
 
     return null
+  },
+
+  generateQuestionPaper: async (payload) => {
+    const res = await fetch(`${QPAPER_API}/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      throw new Error(await getErrorMessage(res, 'Question paper generation failed'))
+    }
+    return res.json()
+  },
+
+  getQuestionPaperHistory: async (opts = {}) => {
+    const params = new URLSearchParams()
+    if (opts.fileId) params.set('file_id', opts.fileId)
+    if (opts.limit != null) params.set('limit', String(opts.limit))
+    if (opts.offset != null) params.set('offset', String(opts.offset))
+    const query = params.toString()
+    const res = await fetch(`${QPAPER_API}/history/papers${query ? `?${query}` : ''}`)
+    if (!res.ok) {
+      throw new Error(await getErrorMessage(res, 'Failed to fetch question paper history'))
+    }
+    return res.json()
   },
 }

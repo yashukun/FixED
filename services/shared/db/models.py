@@ -138,3 +138,30 @@ class SearchHistory(Base):
             f"<SearchHistory(id={self.id}, file_id={self.file_id}, "
             f"query={self.query[:40]!r})>"
         )
+
+
+class GeneratedPaper(Base):
+    """Stores generated question papers and metadata for retrieval."""
+
+    __tablename__ = "generated_papers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(String(255), nullable=False, index=True)
+    topic = Column(Text, nullable=False)
+    mode = Column(String(32), nullable=False, default="official")
+    total_marks = Column(Integer, nullable=False)
+    distribution_json = Column(JSONB, nullable=False, default=dict)
+    paper_json = Column(JSONB, nullable=False, default=dict)
+    retrieval_json = Column(JSONB, nullable=False, default=list)
+    cost_usd = Column(Numeric(16, 8), nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_generated_papers_file_created_at", "file_id", "created_at"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<GeneratedPaper(id={self.id}, file_id={self.file_id}, mode={self.mode}, "
+            f"topic={self.topic[:40]!r})>"
+        )
