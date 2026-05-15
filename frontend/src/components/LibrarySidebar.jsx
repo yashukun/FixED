@@ -8,7 +8,15 @@ const statusColors = {
   failed: 'bg-rose-500/20 text-rose-300',
 }
 
-export default function LibrarySidebar({ jobs, activeJobId, onSelectJob, onNewUpload }) {
+export default function LibrarySidebar({
+  jobs,
+  activeJobId,
+  onSelectJob,
+  onSelectAllBooks,
+  onNewUpload,
+}) {
+  const completedCount = jobs.filter((job) => normalizeStatus(job.status) === 'completed').length
+
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/70">
       <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
@@ -18,6 +26,21 @@ export default function LibrarySidebar({ jobs, activeJobId, onSelectJob, onNewUp
         </button>
       </div>
       <div className="max-h-[620px] overflow-y-auto">
+        {completedCount > 0 && (
+          <div
+            className={`cursor-pointer border-b border-slate-800 px-4 py-3 transition hover:bg-slate-800/80 ${
+              !activeJobId ? 'bg-blue-500/10' : ''
+            }`}
+            onClick={() => onSelectAllBooks?.()}
+          >
+            <div className="mb-1 truncate text-sm font-medium text-slate-100">
+              All Books
+            </div>
+            <div className="text-xs text-slate-400">
+              Search across {completedCount} indexed {completedCount === 1 ? 'book' : 'books'}
+            </div>
+          </div>
+        )}
         {jobs.length === 0 ? (
           <div className="p-6 text-center text-sm text-slate-500">
             No books uploaded yet.

@@ -19,7 +19,7 @@ const navSections = [
   {
     title: 'Upcoming',
     items: [
-      { label: 'Mock Interview / Viva', to: '/upcoming' },
+      { label: 'Mock Interview / Viva', to: '/viva' },
       { label: 'Scheduled Tests', to: '/upcoming' },
     ],
   },

@@ -19,6 +19,7 @@ from pipeline_config import (
     EMBED_MODEL,
     MAX_CHAPTER_SAMPLE_PAGES,
 )
+from content_guard import validate_upload_content
 from store_helpers import build_vectors, mark_job_completed, upsert_chapters
 from vector_store import upsert_vectors
 from db import set_status, JobStatus
@@ -411,26 +412,29 @@ def process_and_store(
         # 0. Mark job as PROCESSING
         set_status(file_id, JobStatus.PROCESSING)
 
-        # 1. Extract
+        # 1. Validate content policy (asynchronous path)
+        validate_upload_content(filename=filename, file_bytes=file_bytes)
+
+        # 2. Extract
         documents, chapters = _extract_documents(file_bytes, filename, cost_tracker=cost_tracker)
 
-        # 2. Chunk
+        # 3. Chunk
         chunks = _chunk_documents(documents)
         chunk_texts = [chunk["text"] for chunk in chunks]
 
-        # 3. Embed
+        # 4. Embed
         embeddings = _embed_chunks(chunk_texts, cost_tracker=cost_tracker)
 
-        # 4. Build vectors matching the vector store schema
+        # 5. Build vectors matching the vector store schema
         vectors = build_vectors(file_id=file_id, filename=filename, chunks=chunks, embeddings=embeddings)
 
-        # 5. Upsert vectors
+        # 6. Upsert vectors
         upsert_vectors(vectors, namespace="documents")
 
-        # 6. Upsert chapters for this file
+        # 7. Upsert chapters for this file
         upsert_chapters(file_id=file_id, chapters=chapters)
 
-        # 7. Mark job as COMPLETED and save the result
+        # 8. Mark job as COMPLETED and save the result
         mark_job_completed(
             file_id=file_id,
             chunk_count=len(chunks),

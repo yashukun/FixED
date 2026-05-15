@@ -10,6 +10,13 @@ import { normalizeStatus } from '../../lib/status'
 import { ErrorBanner } from '../../components/feedback'
 import { useCost } from '../../context/useCost'
 
+const createChatSessionId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 export default function DocumentAssistant() {
   const TYPING_INTERVAL_MS = 30
   const [jobs, setJobs] = useState([])
@@ -19,6 +26,7 @@ export default function DocumentAssistant() {
   const [appState, setAppState] = useState('IDLE')
   const [searchResults, setSearchResults] = useState(null)
   const [searchHistory, setSearchHistory] = useState([])
+  const [chatSessionId, setChatSessionId] = useState(() => createChatSessionId())
   const [errorMsg, setErrorMsg] = useState('')
   const searchAbortRef = useRef(null)
   const typingQueueRef = useRef('')
@@ -27,6 +35,7 @@ export default function DocumentAssistant() {
   const tokenStreamStartedRef = useRef(false)
   const doneStateRef = useRef(null)
   const { startLive, setLive, commitLive, clearLive, addCost } = useCost()
+  const hasCompletedJobs = jobs.some((job) => normalizeStatus(job.status) === 'completed')
 
   const clearTypingState = useCallback(() => {
     typingJobRef.current += 1
@@ -102,11 +111,10 @@ export default function DocumentAssistant() {
       setJobs(data)
 
       if (!activeJob && data.length > 0 && !forceUploadMode) {
-        const readyJob = data.find((job) => normalizeStatus(job.status) === 'completed')
-        if (readyJob) {
-          setActiveJob(readyJob)
+        const hasReadyBooks = data.some((job) => normalizeStatus(job.status) === 'completed')
+        if (hasReadyBooks) {
           setAppState('READY')
-          fetchSearchHistory(readyJob.id)
+          fetchSearchHistory()
         }
       }
     } catch (err) {
@@ -130,6 +138,7 @@ export default function DocumentAssistant() {
     setAppState('UPLOADING')
     setSearchResults(null)
     setLastQuery('')
+    setChatSessionId(createChatSessionId())
   }
 
   const handleUploadSuccess = (jobId) => {
@@ -156,6 +165,7 @@ export default function DocumentAssistant() {
     setErrorMsg('')
     setSearchResults(null)
     setLastQuery('')
+    setChatSessionId(createChatSessionId())
     const status = normalizeStatus(job.status)
 
     if (status === 'completed') {
@@ -177,10 +187,23 @@ export default function DocumentAssistant() {
     setErrorMsg('')
     setLastQuery('')
     setSearchHistory([])
+    setChatSessionId(createChatSessionId())
+  }
+
+  const handleSelectAllBooks = () => {
+    setForceUploadMode(false)
+    setActiveJob(null)
+    setErrorMsg('')
+    setSearchResults(null)
+    setLastQuery('')
+    setChatSessionId(createChatSessionId())
+    if (hasCompletedJobs) {
+      setAppState('READY')
+      fetchSearchHistory()
+    }
   }
 
   const searchInBook = async (query, overrides = {}) => {
-    if (!activeJob?.id) return
     if (searchAbortRef.current) {
       searchAbortRef.current.abort()
     }
@@ -193,14 +216,16 @@ export default function DocumentAssistant() {
     setSearchResults({
       answer: '',
       results: [],
+      response_kind: 'answer',
       needs_clarification: false,
       clarification_options: null,
       is_streaming: true,
     })
     try {
-      await api.searchBookStream(query, activeJob.id, {
+      await api.searchBookStream(query, activeJob?.id ?? null, {
         activePage: overrides.activePage ?? null,
         chapterNumber: overrides.chapterNumber ?? null,
+        chatSessionId,
         signal: controller.signal,
       }, {
         onRetrieval: (evt) => {
@@ -241,7 +266,16 @@ export default function DocumentAssistant() {
           } else {
             commitLive()
           }
-          fetchSearchHistory(activeJob?.id)
+          fetchSearchHistory(activeJob?.id ?? null)
+        },
+        onStatus: (evt) => {
+          if (!evt?.message) return
+          setSearchResults((prev) => ({
+            ...(prev || {}),
+            answer: String(evt.message),
+            results: prev?.results || [],
+            is_streaming: true,
+          }))
         },
         onCost: (evt) => {
           if (typeof evt?.usd === 'number') {
@@ -273,6 +307,7 @@ export default function DocumentAssistant() {
         jobs={jobs}
         activeJobId={activeJob?.id}
         onSelectJob={handleLibrarySelect}
+        onSelectAllBooks={handleSelectAllBooks}
         onNewUpload={resetToUpload}
       />
       <Card className="min-h-[560px]">
@@ -308,12 +343,16 @@ export default function DocumentAssistant() {
           />
         )}
 
-        {appState === 'READY' && activeJob && (
+        {appState === 'READY' && (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-lg font-semibold text-white">Searching in: {activeJob.filename}</h3>
-                <p className="text-sm text-emerald-300">Document ready and indexed.</p>
+                <h3 className="text-lg font-semibold text-white">
+                  Searching in: {activeJob?.filename || 'All Books'}
+                </h3>
+                <p className="text-sm text-emerald-300">
+                  {activeJob ? 'Document ready and indexed.' : 'Global mode across indexed books.'}
+                </p>
               </div>
               <button
                 type="button"
@@ -353,6 +392,7 @@ export default function DocumentAssistant() {
                         onClick={() => setSearchResults({
                           answer: item.answer,
                           results: item.results,
+                          response_kind: item.response_kind || 'answer',
                           cost: { usd: item.cost_usd, breakdown: [] },
                           is_streaming: false,
                         })}

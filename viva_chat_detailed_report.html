@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FixED Viva Implementation and Chat Session Report</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; line-height: 1.45; margin: 36px; color: #111; }
+    h1, h2, h3 { margin-top: 1.2em; margin-bottom: 0.35em; }
+    h1 { font-size: 26px; }
+    h2 { font-size: 20px; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
+    h3 { font-size: 16px; }
+    p { margin: 8px 0; }
+    ul { margin: 6px 0 12px 20px; }
+    code { background: #f3f3f3; padding: 1px 4px; border-radius: 3px; }
+    .meta { color: #444; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>FixED Viva Feature: Detailed Implementation and Debugging Report</h1>
+  <p class="meta"><strong>Scope:</strong> End-to-end Viva feature work completed in this chat session, including architecture, implementation details, incident fixes, and operational outcomes.</p>
+
+  <h2>1) Objective and Product Scope</h2>
+  <p>
+    The goal was to build a Viva (oral examination / mock interview) feature where a student selects a book/chapter/topic, grants camera/mic permissions, is identity-checked, answers AI-asked oral questions, and receives a detailed dashboard after session completion.
+  </p>
+  <p>
+    The implemented scope includes setup, live session controls, proctoring checks with warnings and termination policy, post-session scoring, and historical audit retrieval.
+  </p>
+
+  <h2>2) Initial State Before Implementation</h2>
+  <ul>
+    <li><code>services/viva/main.py</code> existed only as a health-check stub.</li>
+    <li>No STT/TTS orchestration in Viva service.</li>
+    <li>No proctoring or identity pipelines.</li>
+    <li>No Viva data persistence entities in shared DB models.</li>
+    <li>No Viva route/proxy integration in frontend API and runtime nginx proxy.</li>
+  </ul>
+
+  <h2>3) Backend Implementation Details</h2>
+  <h3>3.1 Core service architecture in <code>services/viva/main.py</code></h3>
+  <ul>
+    <li>Startup initializes shared DB schema via <code>init_db()</code>.</li>
+    <li>OpenAI client bootstrap is lazy and keyed by <code>OPENAI_API_KEY</code>.</li>
+    <li>Cost tracking implemented via <code>_CostTracker</code> and shared cost events.</li>
+    <li>Session lifecycle handles active/completed/terminated states and timeout guards.</li>
+  </ul>
+
+  <h3>3.2 Implemented endpoints</h3>
+  <ul>
+    <li><code>POST /viva/sessions/start</code>: create session + first question generation.</li>
+    <li><code>POST /viva/sessions/{id}/reference-photo</code>: enroll reference face photo.</li>
+    <li><code>POST /viva/sessions/{id}/proctor/frame</code>: frame-level presence/match checks with warning escalation.</li>
+    <li><code>POST /viva/sessions/{id}/answer</code>: answer ingestion, STT fallback, evaluation, next question generation.</li>
+    <li><code>GET /viva/sessions/{id}</code>: current live session state + active question.</li>
+    <li><code>POST /viva/sessions/{id}/finish</code>: manual finish and final result generation.</li>
+    <li><code>GET /viva/sessions/{id}/results</code>: final dashboard payload.</li>
+    <li><code>GET /viva/history/sessions</code>: list past sessions with summary metrics.</li>
+    <li><code>GET /viva/sessions/{id}/audit</code>: full audit payload for evaluators.</li>
+  </ul>
+
+  <h3>3.3 Proctoring policy implementation</h3>
+  <ul>
+    <li>Presence/identity evaluated on periodic frame submissions.</li>
+    <li>On failed checks, warning count increments.</li>
+    <li>Warnings at strike 1-3, auto-termination at strike 4.</li>
+    <li>Session timeout and per-question timeout termination paths are enforced.</li>
+  </ul>
+
+  <h3>3.4 Prompt and provider layers</h3>
+  <ul>
+    <li><code>services/viva/prompting.py</code>: initial question, follow-up, answer evaluation, summary prompts.</li>
+    <li><code>services/viva/providers/voice.py</code>: STT and TTS adapter methods.</li>
+    <li><code>services/viva/providers/face.py</code>: face match strategy using base64 fingerprint comparison.</li>
+  </ul>
+
+  <h3>3.5 Data persistence (shared DB)</h3>
+  <p>Added entities in <code>services/shared/db/models.py</code>:</p>
+  <ul>
+    <li><code>VivaSession</code></li>
+    <li><code>VivaQuestion</code></li>
+    <li><code>VivaTurn</code></li>
+    <li><code>VivaProctorEvent</code></li>
+    <li><code>VivaResult</code></li>
+  </ul>
+  <p>Also added SQL migration artifact: <code>services/shared/db/migrations/001_viva_tables.sql</code>.</p>
+
+  <h2>4) Frontend Implementation Details</h2>
+  <h3>4.1 New Viva experience</h3>
+  <ul>
+    <li>Added <code>frontend/src/pages/VivaPage.jsx</code> with:
+      <ul>
+        <li>Pre-session setup (book/chapter/topic + permissions + reference photo).</li>
+        <li>Live session question flow (speak question, answer input/STT trigger, submit/finish).</li>
+        <li>Timers and warning state display.</li>
+        <li>Results dashboard with score breakdown and AI feedback.</li>
+        <li>Proctor event timeline and saved frame snapshots.</li>
+      </ul>
+    </li>
+  </ul>
+
+  <h3>4.2 API client expansion</h3>
+  <p><code>frontend/src/services/api.js</code> was extended with Viva methods for session lifecycle, proctoring, results, history, and audit retrieval.</p>
+
+  <h3>4.3 Routing and navigation</h3>
+  <ul>
+    <li>Added route in <code>frontend/src/App.jsx</code> for <code>/viva</code>.</li>
+    <li>Updated sidebar nav in <code>frontend/src/layouts/LmsLayout.jsx</code> to point Viva item to <code>/viva</code>.</li>
+  </ul>
+
+  <h3>4.4 Runtime proxying</h3>
+  <ul>
+    <li>Dev proxy added in <code>frontend/vite.config.js</code> for <code>/api/viva</code>.</li>
+    <li>Container runtime nginx proxy added in <code>frontend/nginx.conf</code> for <code>/api/viva/</code> to Viva service.</li>
+  </ul>
+
+  <h2>5) Major Issues Encountered and Fixes Applied</h2>
+  <h3>Issue A: Services failed startup with duplicate index error</h3>
+  <p><strong>Error:</strong> duplicate <code>ix_viva_results_created_at</code> during schema create.</p>
+  <p><strong>Cause:</strong> index was defined twice for Viva results created_at (implicit + explicit).</p>
+  <p><strong>Fix:</strong> removed duplicate explicit index declaration from model.</p>
+
+  <h3>Issue B: Viva start endpoint returning 405</h3>
+  <p><strong>Error:</strong> <code>POST /api/viva/viva/sessions/start</code> returned 405 behind frontend container.</p>
+  <p><strong>Cause:</strong> runtime nginx config lacked <code>/api/viva/</code> proxy block.</p>
+  <p><strong>Fix:</strong> added nginx proxy section and rebuilt frontend.</p>
+
+  <h3>Issue C: OpenAI client init crash (<code>proxies</code> argument)</h3>
+  <p><strong>Error:</strong> <code>Client.__init__() got an unexpected keyword argument 'proxies'</code>.</p>
+  <p><strong>Cause:</strong> dependency mismatch between <code>openai</code> and resolved <code>httpx</code>.</p>
+  <p><strong>Fix:</strong> pinned <code>httpx==0.27.2</code> in Viva requirements and rebuilt Viva container.</p>
+
+  <h3>Issue D: Submit/finish reliability and warning behavior</h3>
+  <p><strong>Observed:</strong> session could appear stuck when backend returned terminated path.</p>
+  <p><strong>Fixes:</strong></p>
+  <ul>
+    <li>Frontend now handles <code>terminated</code> and no-next-question result transitions robustly.</li>
+    <li>Proctor checks run immediately + periodic checks (more responsive warning updates).</li>
+    <li>Face matching strengthened by fingerprinting across distributed base64 windows.</li>
+  </ul>
+
+  <h3>Issue E: Past session history endpoint failed with UUID parsing</h3>
+  <p><strong>Error:</strong> route interpreted <code>history</code> as <code>{session_id}</code> UUID.</p>
+  <p><strong>Cause:</strong> route conflict between static and dynamic paths.</p>
+  <p><strong>Fix:</strong> moved history route to <code>/viva/history/sessions</code> and updated frontend client.</p>
+
+  <h2>6) Persistence and Audit Improvements Added Later</h2>
+  <ul>
+    <li>Session start/reference/manual finish events are now also logged as proctor events.</li>
+    <li>All proctor frames are persisted in event details for evaluator review.</li>
+    <li>Added session history list for reviewing all Viva/interview attempts.</li>
+    <li>Added full audit endpoint for evaluator deep review:
+      <ul>
+        <li>session metadata</li>
+        <li>reference photo</li>
+        <li>questions asked</li>
+        <li>turns/answers/evaluations</li>
+        <li>proctor timeline with frame evidence</li>
+        <li>final result summary</li>
+      </ul>
+    </li>
+  </ul>
+
+  <h2>7) Build and Deployment Changes</h2>
+  <ul>
+    <li><code>services/viva/Dockerfile</code> aligned with multi-service layout (shared code copied + PYTHONPATH set).</li>
+    <li><code>docker-compose.yml</code> updated for Viva build path and frontend dependency flow.</li>
+    <li>Multiple rebuild/restart cycles executed to validate fixes against live container logs.</li>
+  </ul>
+
+  <h2>8) Testing and Validation Performed</h2>
+  <ul>
+    <li>Frontend route tests passed via Vitest.</li>
+    <li>Viva backend unit tests passed via unittest.</li>
+    <li>Live proxy endpoint checks were run through frontend gateway path.</li>
+    <li>Container rebuild/restart verifications confirmed service startup after each major fix.</li>
+  </ul>
+
+  <h2>9) Current Functional Outcome</h2>
+  <ul>
+    <li>Viva sessions can be started and progressed.</li>
+    <li>Proctoring warnings and 4th-strike termination are implemented.</li>
+    <li>Finish/submit transitions are handled reliably in UI and backend.</li>
+    <li>Results include per-question and AI summary data.</li>
+    <li>Past sessions and detailed audit artifacts are retrievable.</li>
+  </ul>
+
+  <h2>10) Architectural Notes and Future Hardening</h2>
+  <ul>
+    <li>Current frame evidence is stored directly as base64 in DB event JSON; for scale, move to object storage and persist URLs.</li>
+    <li>Face verification currently uses an internal heuristic; production-grade model/service integration is recommended.</li>
+    <li>Add role-based evaluator views and access controls for audit payloads.</li>
+    <li>Add pagination/filtering enhancements and richer search across history.</li>
+  </ul>
+
+  <h2>11) File Areas Touched (High Level)</h2>
+  <ul>
+    <li>Backend: <code>services/viva/*</code></li>
+    <li>Shared DB: <code>services/shared/db/models.py</code>, <code>services/shared/db/__init__.py</code>, migration SQL</li>
+    <li>Frontend: <code>frontend/src/pages/VivaPage.jsx</code>, <code>frontend/src/services/api.js</code>, routing/layout files</li>
+    <li>Infra/runtime: <code>docker-compose.yml</code>, <code>frontend/nginx.conf</code>, <code>frontend/vite.config.js</code></li>
+  </ul>
+
+  <p><strong>End of report.</strong></p>
+</body>
+</html>

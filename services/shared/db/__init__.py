@@ -22,6 +22,12 @@ from .models import (  # noqa: F401 — re-export
     Job,
     JobStatus,
     SearchHistory,
+    VivaProctorEvent,
+    VivaQuestion,
+    VivaResult,
+    VivaSession,
+    VivaSessionStatus,
+    VivaTurn,
 )
 
 # ── Engine ───────────────────────────────────────────────────────────────
@@ -103,8 +109,33 @@ def init_db():
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.commit()
-        
+
     Base.metadata.create_all(bind=engine)
+    _ensure_search_history_columns()
+
+
+def _ensure_search_history_columns():
+    """Add newly introduced search history columns for existing deployments."""
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE search_history "
+                "ADD COLUMN IF NOT EXISTS chat_session_id VARCHAR(128)"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE search_history "
+                "ADD COLUMN IF NOT EXISTS response_kind VARCHAR(32) NOT NULL DEFAULT 'answer'"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_search_history_session_created_at "
+                "ON search_history (chat_session_id, created_at)"
+            )
+        )
+        conn.commit()
 
 
 def set_status(job_id: str, status: str, error: str | None = None):

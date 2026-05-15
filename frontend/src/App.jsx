@@ -5,6 +5,7 @@ import LearnBooksPage from './pages/LearnBooksPage'
 import LearnSubjectsPage from './pages/LearnSubjectsPage'
 import UpcomingPage from './pages/UpcomingPage'
 import LearnAssistantPage from './pages/LearnAssistantPage'
+import VivaPage from './pages/VivaPage'
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
         <Route path="learn/subjects" element={<LearnSubjectsPage />} />
         <Route path="learn/assistant" element={<LearnAssistantPage />} />
         <Route path="upcoming" element={<UpcomingPage />} />
+        <Route path="viva" element={<VivaPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

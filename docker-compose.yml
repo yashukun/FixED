@@ -88,7 +88,9 @@ services:
       qdrant: { condition: service_started }
 
   viva:
-    build: ./services/viva
+    build:
+      context: .
+      dockerfile: ./services/viva/Dockerfile
     ports: [ "8004:8000" ]
     env_file: .env
 
@@ -104,6 +106,7 @@ services:
       gateway: { condition: service_started }
       ingest: { condition: service_started }
       search: { condition: service_started }
+      viva: { condition: service_started }
 
 volumes:
   pg_data:

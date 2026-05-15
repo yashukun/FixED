@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useState } from 'react'
-import jsPDF from 'jspdf'
 import { api } from '../services/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
@@ -7,6 +6,8 @@ import { ErrorBanner, SpinnerState } from '../components/feedback'
 import { useAsyncResource } from '../hooks/useAsyncResource'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { downloadPaperPdf } from '../lib/questionPaperPdf'
+import { flattenQuestions, normalizePaperEntry } from '../lib/questionPaperFormat'
 
 function EventList({ events }) {
   return (
@@ -24,108 +25,7 @@ function EventList({ events }) {
   )
 }
 
-const sectionLabels = {
-  mcq: 'MCQ',
-  subjective: 'Subjective',
-  true_false: 'True / False',
-  fill_blank: 'Fill in the Blank',
-}
-
 const objectiveSections = new Set(['mcq', 'true_false', 'fill_blank'])
-
-function normalizePaperEntry(row) {
-  if (!row) return null
-  return {
-    paper_id: row.paper_id,
-    topic: row.topic || 'Untitled paper',
-    mode: row.mode || 'official',
-    file_id: row.file_id || '',
-    total_marks: Number(row.total_marks || 0),
-    created_at: row.created_at || new Date().toISOString(),
-    paper: row.paper || { mcq: [], subjective: [], true_false: [], fill_blank: [] },
-  }
-}
-
-function flattenQuestions(paperEntry) {
-  if (!paperEntry?.paper) return []
-  const rows = []
-  let counter = 1
-  for (const key of ['mcq', 'subjective', 'true_false', 'fill_blank']) {
-    const sectionRows = Array.isArray(paperEntry.paper[key]) ? paperEntry.paper[key] : []
-    for (let idx = 0; idx < sectionRows.length; idx += 1) {
-      const row = sectionRows[idx]
-      rows.push({
-        qid: `${key}-${idx}`,
-        number: counter,
-        section: key,
-        sectionLabel: sectionLabels[key] || key,
-        question: row?.question || '',
-        answer: row?.answer || '',
-        marks: Number(row?.marks || 0),
-        options: Array.isArray(row?.options) ? row.options : [],
-      })
-      counter += 1
-    }
-  }
-  return rows
-}
-
-function downloadPaperPdf(paperEntry) {
-  const questions = flattenQuestions(paperEntry)
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
-  const marginLeft = 40
-  const pageHeight = doc.internal.pageSize.getHeight()
-  let y = 50
-
-  const writeLine = (text, opts = {}) => {
-    const fontSize = opts.fontSize || 11
-    const gap = opts.gap || 16
-    doc.setFont('helvetica', opts.bold ? 'bold' : 'normal')
-    doc.setFontSize(fontSize)
-    const lines = doc.splitTextToSize(String(text ?? ''), 515)
-    for (const line of lines) {
-      if (y > pageHeight - 40) {
-        doc.addPage()
-        y = 40
-      }
-      doc.text(line, marginLeft, y)
-      y += gap
-    }
-  }
-
-  writeLine(paperEntry.topic, { fontSize: 16, bold: true, gap: 20 })
-  writeLine(`Mode: ${paperEntry.mode}`, { fontSize: 11 })
-  writeLine(`Total Marks: ${paperEntry.total_marks}`, { fontSize: 11 })
-  writeLine(`Generated: ${new Date(paperEntry.created_at).toLocaleString()}`, { fontSize: 11, gap: 18 })
-  writeLine('Instructions: Answer all questions.', { fontSize: 11, gap: 20 })
-
-  const sectionOrder = ['mcq', 'subjective', 'true_false', 'fill_blank']
-  for (const sectionKey of sectionOrder) {
-    const sectionQuestions = questions.filter((question) => question.section === sectionKey)
-    if (!sectionQuestions.length) continue
-
-    const uniqueMarks = [...new Set(sectionQuestions.map((question) => question.marks).filter((mark) => mark > 0))]
-    const heading =
-      uniqueMarks.length === 1
-        ? `${sectionLabels[sectionKey]} questions each ${uniqueMarks[0]} mark:`
-        : `${sectionLabels[sectionKey]} questions:`
-    writeLine(heading, { fontSize: 12, bold: true, gap: 18 })
-
-    sectionQuestions.forEach((question, idx) => {
-      writeLine(`${idx + 1}. ${question.question}`, { fontSize: 11, bold: true, gap: 16 })
-      if (question.section === 'mcq' && question.options.length) {
-        question.options.forEach((opt, optionIdx) => {
-          const label = String.fromCharCode(65 + optionIdx)
-          writeLine(`   ${label}. ${opt}`, { fontSize: 10, gap: 14 })
-        })
-      }
-      writeLine('', { gap: 10 })
-    })
-  }
-
-  const safeTitle = (paperEntry.topic || 'question-paper').replace(/[^a-z0-9-_]+/gi, '-').slice(0, 60)
-  doc.save(`${safeTitle || 'question-paper'}.pdf`)
-}
 
 export default function UpcomingPage() {
   const loadUpcoming = useCallback(() => api.getUpcomingEvents(), [])
@@ -186,7 +86,10 @@ export default function UpcomingPage() {
     [normalizedPapers, activePaperId],
   )
 
-  const activeQuestions = useMemo(() => flattenQuestions(activePaper), [activePaper])
+  const activeQuestions = useMemo(
+    () => flattenQuestions(activePaper, { numbering: 'global' }),
+    [activePaper],
+  )
 
   const distributionTotal = useMemo(
     () =>
@@ -267,7 +170,7 @@ export default function UpcomingPage() {
 
   const handleSubmitTest = () => {
     if (!activePaper) return
-    const questions = flattenQuestions(activePaper)
+    const questions = flattenQuestions(activePaper, { numbering: 'global' })
     let objectiveScored = 0
     let objectiveTotal = 0
     let answered = 0
@@ -491,6 +394,28 @@ export default function UpcomingPage() {
                       </label>
                     ))}
                   </div>
+                ) : q.section === 'true_false' ? (
+                  <div className="mt-2 space-y-2">
+                    {['True', 'False'].map((option) => (
+                      <label key={`${q.qid}-${option}`} className="flex items-center gap-2 text-sm text-slate-300">
+                        <input
+                          type="radio"
+                          name={q.qid}
+                          value={option}
+                          checked={answersByQid[q.qid] === option}
+                          onChange={(e) => setAnswer(q.qid, e.target.value)}
+                        />
+                        <span>{option}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : q.section === 'fill_blank' ? (
+                  <Input
+                    className="mt-2"
+                    placeholder="Type the missing term..."
+                    value={answersByQid[q.qid] || ''}
+                    onChange={(e) => setAnswer(q.qid, e.target.value)}
+                  />
                 ) : (
                   <textarea
                     className="mt-2 min-h-20 w-full rounded-md border border-slate-700 bg-slate-900/70 p-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"

@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { vi, describe, it, expect, afterEach } from 'vitest'
 import App from './App'
+import { CostProvider } from './context/CostContext'
 
 function mockFetch(payloadByUrl) {
   globalThis.fetch = vi.fn((url) => {
@@ -22,6 +23,16 @@ function mockFetch(payloadByUrl) {
   })
 }
 
+function renderWithProviders(initialEntries) {
+  return render(
+    <CostProvider>
+      <MemoryRouter initialEntries={initialEntries}>
+        <App />
+      </MemoryRouter>
+    </CostProvider>,
+  )
+}
+
 describe('LMS routes', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -36,11 +47,7 @@ describe('LMS routes', () => {
       },
     })
 
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <App />
-      </MemoryRouter>,
-    )
+    renderWithProviders(['/'])
 
     expect(await screen.findByText('Student Dashboard')).toBeInTheDocument()
     expect(await screen.findByText('Assigned Subjects')).toBeInTheDocument()
@@ -57,15 +64,30 @@ describe('LMS routes', () => {
       },
     })
 
-    render(
-      <MemoryRouter initialEntries={['/learn/books']}>
-        <App />
-      </MemoryRouter>,
-    )
+    renderWithProviders(['/learn/books'])
 
     await waitFor(() => {
       expect(screen.getByText('Learn • Books')).toBeInTheDocument()
     })
     expect(screen.getByText('Class 10 Physics Essentials')).toBeInTheDocument()
+  })
+
+  it('renders viva setup page', async () => {
+    mockFetch({
+      '/api/ingest/jobs': [
+        {
+          id: 'job-1',
+          filename: 'biology.pdf',
+          status: 'completed',
+        },
+      ],
+    })
+
+    renderWithProviders(['/viva'])
+
+    await waitFor(() => {
+      expect(screen.getByText('Viva (Oral Examination)')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Pre-Session Setup')).toBeInTheDocument()
   })
 })

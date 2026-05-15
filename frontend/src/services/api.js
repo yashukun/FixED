@@ -2,6 +2,7 @@ const GATEWAY_API = import.meta.env.VITE_GATEWAY_API || '/api/gateway'
 const INGEST_API = import.meta.env.VITE_INGEST_API || '/api/ingest'
 const SEARCH_API = import.meta.env.VITE_SEARCH_API || '/api/search'
 const QPAPER_API = import.meta.env.VITE_QPAPER_API || '/api/qpaper'
+const VIVA_API = import.meta.env.VITE_VIVA_API || '/api/viva'
 
 const parseJsonSafe = async (res) => {
   try {
@@ -133,11 +134,14 @@ export const api = {
   searchBook: async (query, fileId, opts = {}) => {
     const payload = {
       query,
-      file_id: fileId,
       top_k: opts.topK ?? 5,
       active_page: opts.activePage ?? null,
       chapter_number: opts.chapterNumber ?? null,
-    };
+      chat_session_id: opts.chatSessionId ?? null,
+    }
+    if (fileId) {
+      payload.file_id = fileId
+    }
     const res = await fetch(`${SEARCH_API}/search`, {
       method: 'POST',
       headers: {
@@ -155,6 +159,7 @@ export const api = {
   getSearchHistory: async (opts = {}) => {
     const params = new URLSearchParams()
     if (opts.fileId) params.set('file_id', opts.fileId)
+    if (opts.chatSessionId) params.set('chat_session_id', opts.chatSessionId)
     if (opts.limit != null) params.set('limit', String(opts.limit))
     if (opts.offset != null) params.set('offset', String(opts.offset))
     const query = params.toString()
@@ -168,10 +173,13 @@ export const api = {
   searchBookStream: async (query, fileId, opts = {}, handlers = {}) => {
     const payload = {
       query,
-      file_id: fileId,
       top_k: opts.topK ?? 5,
       active_page: opts.activePage ?? null,
       chapter_number: opts.chapterNumber ?? null,
+      chat_session_id: opts.chatSessionId ?? null,
+    }
+    if (fileId) {
+      payload.file_id = fileId
     }
     const res = await fetch(`${SEARCH_API}/search/stream`, {
       method: 'POST',
@@ -207,6 +215,10 @@ export const api = {
       }
       if (parsed.event === 'cost') {
         handlers.onCost?.(parsed.data)
+        return null
+      }
+      if (parsed.event === 'status') {
+        handlers.onStatus?.(parsed.data)
         return null
       }
       if (parsed.event === 'error') {
@@ -271,5 +283,86 @@ export const api = {
       throw new Error(await getErrorMessage(res, 'Failed to fetch question paper history'))
     }
     return res.json()
+  },
+
+  startVivaSession: async (payload) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to start viva session'))
+    return res.json()
+  },
+
+  setVivaReferencePhoto: async (sessionId, imageB64) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}/reference-photo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_b64: imageB64 }),
+    })
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to upload reference photo'))
+    return res.json()
+  },
+
+  vivaProctorFrame: async (sessionId, frameB64, threshold = 0.9) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}/proctor/frame`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frame_b64: frameB64, threshold }),
+    })
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Proctor frame check failed'))
+    return res.json()
+  },
+
+  submitVivaAnswer: async (sessionId, payload) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to submit viva answer'))
+    return res.json()
+  },
+
+  finishVivaSession: async (sessionId) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}/finish`, { method: 'POST' })
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to finish viva session'))
+    return res.json()
+  },
+
+  getVivaSession: async (sessionId) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}`)
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch viva session'))
+    return res.json()
+  },
+
+  getVivaResults: async (sessionId) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}/results`)
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch viva results'))
+    return res.json()
+  },
+
+  getVivaHistory: async (opts = {}) => {
+    const params = new URLSearchParams()
+    if (opts.fileId) params.set('file_id', opts.fileId)
+    if (opts.status) params.set('status', opts.status)
+    if (opts.limit != null) params.set('limit', String(opts.limit))
+    if (opts.offset != null) params.set('offset', String(opts.offset))
+    const query = params.toString()
+    const res = await fetch(`${VIVA_API}/viva/history/sessions${query ? `?${query}` : ''}`)
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch viva history'))
+    return res.json()
+  },
+
+  getVivaSessionAudit: async (sessionId) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}/audit`)
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch viva audit'))
+    return res.json()
+  },
+
+  getVivaMediaUrl: (sessionId, objectPath) => {
+    if (!sessionId || !objectPath) return ''
+    return `${VIVA_API}/viva/sessions/${sessionId}/media?object_path=${encodeURIComponent(objectPath)}`
   },
 }

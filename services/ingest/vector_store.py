@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from db import DocumentChunk, get_db_context
 from qdrant_client import QdrantClient
+from qdrant_client import models as qdrant_models
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,12 @@ QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "document_chunks")
 EMBEDDING_DIMENSION = 1536
 QDRANT_RECREATE_ON_DIM_MISMATCH = (
     os.environ.get("QDRANT_RECREATE_ON_DIM_MISMATCH", "false").lower() == "true"
+)
+QDRANT_HNSW_M = max(int(os.environ.get("QDRANT_HNSW_M", "0")), 0)
+QDRANT_HNSW_EF_CONSTRUCT = max(int(os.environ.get("QDRANT_HNSW_EF_CONSTRUCT", "0")), 0)
+QDRANT_ENABLE_QUANTIZATION = os.environ.get("QDRANT_ENABLE_QUANTIZATION", "false").lower() == "true"
+QDRANT_QUANTIZATION_ALWAYS_RAM = (
+    os.environ.get("QDRANT_QUANTIZATION_ALWAYS_RAM", "false").lower() == "true"
 )
 
 # ---------------------------------------------------------------------------
@@ -95,14 +102,101 @@ def _get_qdrant_collection_vector_size(client: QdrantClient) -> int | None:
     return None
 
 
+def _qdrant_create_kwargs(expected_dim: int) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "collection_name": QDRANT_COLLECTION,
+        "vectors_config": VectorParams(size=expected_dim, distance=Distance.COSINE),
+    }
+    if QDRANT_HNSW_M > 0 or QDRANT_HNSW_EF_CONSTRUCT > 0:
+        hnsw_diff_cls = getattr(qdrant_models, "HnswConfigDiff", None)
+        if hnsw_diff_cls is not None:
+            kwargs["hnsw_config"] = hnsw_diff_cls(
+                m=QDRANT_HNSW_M if QDRANT_HNSW_M > 0 else None,
+                ef_construct=QDRANT_HNSW_EF_CONSTRUCT if QDRANT_HNSW_EF_CONSTRUCT > 0 else None,
+            )
+    if QDRANT_ENABLE_QUANTIZATION:
+        scalar_quantization_cls = getattr(qdrant_models, "ScalarQuantization", None)
+        scalar_config_cls = getattr(qdrant_models, "ScalarQuantizationConfig", None)
+        scalar_type = getattr(qdrant_models, "ScalarType", None)
+        if scalar_quantization_cls and scalar_config_cls and scalar_type:
+            kwargs["quantization_config"] = scalar_quantization_cls(
+                scalar=scalar_config_cls(
+                    type=scalar_type.INT8,
+                    always_ram=QDRANT_QUANTIZATION_ALWAYS_RAM,
+                )
+            )
+    return kwargs
+
+
+def _ensure_qdrant_payload_indexes(client: QdrantClient) -> None:
+    payload_schema_type = getattr(qdrant_models, "PayloadSchemaType", None)
+    file_id_schema = (
+        payload_schema_type.KEYWORD
+        if payload_schema_type is not None
+        else "keyword"
+    )
+    integer_schema = (
+        payload_schema_type.INTEGER
+        if payload_schema_type is not None
+        else "integer"
+    )
+    index_fields = (
+        ("file_id", file_id_schema),
+        ("chapter_number", integer_schema),
+        ("page_number", integer_schema),
+    )
+    for field_name, field_schema in index_fields:
+        try:
+            client.create_payload_index(
+                collection_name=QDRANT_COLLECTION,
+                field_name=field_name,
+                field_schema=field_schema,
+                wait=True,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Skipped/failed payload index creation for %s: %s",
+                field_name,
+                exc,
+            )
+
+
+def _apply_qdrant_collection_tuning(client: QdrantClient) -> None:
+    if not (QDRANT_HNSW_M > 0 or QDRANT_HNSW_EF_CONSTRUCT > 0 or QDRANT_ENABLE_QUANTIZATION):
+        return
+    kwargs: dict[str, Any] = {"collection_name": QDRANT_COLLECTION}
+    if QDRANT_HNSW_M > 0 or QDRANT_HNSW_EF_CONSTRUCT > 0:
+        hnsw_diff_cls = getattr(qdrant_models, "HnswConfigDiff", None)
+        if hnsw_diff_cls is not None:
+            kwargs["hnsw_config"] = hnsw_diff_cls(
+                m=QDRANT_HNSW_M if QDRANT_HNSW_M > 0 else None,
+                ef_construct=QDRANT_HNSW_EF_CONSTRUCT if QDRANT_HNSW_EF_CONSTRUCT > 0 else None,
+            )
+    if QDRANT_ENABLE_QUANTIZATION:
+        scalar_quantization_cls = getattr(qdrant_models, "ScalarQuantization", None)
+        scalar_config_cls = getattr(qdrant_models, "ScalarQuantizationConfig", None)
+        scalar_type = getattr(qdrant_models, "ScalarType", None)
+        if scalar_quantization_cls and scalar_config_cls and scalar_type:
+            kwargs["quantization_config"] = scalar_quantization_cls(
+                scalar=scalar_config_cls(
+                    type=scalar_type.INT8,
+                    always_ram=QDRANT_QUANTIZATION_ALWAYS_RAM,
+                )
+            )
+    if len(kwargs) <= 1:
+        return
+    try:
+        client.update_collection(**kwargs)
+    except Exception as exc:
+        logger.warning("Qdrant collection tuning update failed: %s", exc)
+
+
 def _ensure_qdrant_collection(client: QdrantClient, expected_dim: int) -> None:
     collections = client.get_collections().collections
     exists = any(collection.name == QDRANT_COLLECTION for collection in collections)
     if not exists:
-        client.create_collection(
-            collection_name=QDRANT_COLLECTION,
-            vectors_config=VectorParams(size=expected_dim, distance=Distance.COSINE),
-        )
+        client.create_collection(**_qdrant_create_kwargs(expected_dim))
+        _ensure_qdrant_payload_indexes(client)
         logger.info(
             "Created Qdrant collection %s with vector_size=%s",
             QDRANT_COLLECTION,
@@ -118,6 +212,8 @@ def _ensure_qdrant_collection(client: QdrantClient, expected_dim: int) -> None:
         )
         return
     if current_dim == expected_dim:
+        _ensure_qdrant_payload_indexes(client)
+        _apply_qdrant_collection_tuning(client)
         return
 
     if QDRANT_RECREATE_ON_DIM_MISMATCH:
@@ -128,10 +224,8 @@ def _ensure_qdrant_collection(client: QdrantClient, expected_dim: int) -> None:
             expected_dim,
         )
         client.delete_collection(collection_name=QDRANT_COLLECTION)
-        client.create_collection(
-            collection_name=QDRANT_COLLECTION,
-            vectors_config=VectorParams(size=expected_dim, distance=Distance.COSINE),
-        )
+        client.create_collection(**_qdrant_create_kwargs(expected_dim))
+        _ensure_qdrant_payload_indexes(client)
         return
 
     raise ValueError(

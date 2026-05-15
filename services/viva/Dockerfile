@@ -5,9 +5,11 @@ RUN pip install uv
 WORKDIR /app
 
 # Copy only requirements first (for caching)
-COPY requirements.txt .
+COPY services/viva/requirements.txt .
 
 # Install dependencies (FAST ⚡)
 RUN uv pip install --system -r requirements.txt
-COPY . .
+COPY services/viva .
+COPY services/shared shared
+ENV PYTHONPATH="/app:/app/shared"
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

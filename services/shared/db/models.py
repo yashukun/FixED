@@ -118,12 +118,14 @@ class SearchHistory(Base):
     __tablename__ = "search_history"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_session_id = Column(String(128), nullable=True, index=True)
     query = Column(Text, nullable=False)
     file_id = Column(String(255), nullable=True, index=True)
     scope = Column(String(64), nullable=False, default="factoid")
     task = Column(String(64), nullable=False, default="qa")
     style = Column(String(64), nullable=False, default="default")
     language = Column(String(16), nullable=False, default="en")
+    response_kind = Column(String(32), nullable=False, default="answer")
     answer = Column(Text, nullable=False, default="")
     results_json = Column(JSONB, nullable=False, default=list)
     cost_usd = Column(Numeric(16, 8), nullable=False, default=0)
@@ -131,6 +133,7 @@ class SearchHistory(Base):
 
     __table_args__ = (
         Index("ix_search_history_file_created_at", "file_id", "created_at"),
+        Index("ix_search_history_session_created_at", "chat_session_id", "created_at"),
     )
 
     def __repr__(self):
@@ -165,3 +168,119 @@ class GeneratedPaper(Base):
             f"<GeneratedPaper(id={self.id}, file_id={self.file_id}, mode={self.mode}, "
             f"topic={self.topic[:40]!r})>"
         )
+
+
+class VivaSessionStatus(str, Enum):
+    """Lifecycle status for a viva session."""
+
+    PENDING = "pending"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    TERMINATED_PROCTORING = "terminated_proctoring"
+    TERMINATED_TIMEOUT = "terminated_timeout"
+
+
+class VivaSession(Base):
+    """Stores one viva session and high-level policy/config state."""
+
+    __tablename__ = "viva_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(String(255), nullable=False, index=True)
+    topic = Column(Text, nullable=False)
+    chapter_number = Column(Integer, nullable=True)
+    question_count = Column(Integer, nullable=False, default=5)
+    per_question_limit_seconds = Column(Integer, nullable=False, default=60)
+    session_limit_seconds = Column(Integer, nullable=False, default=600)
+    status = Column(SQLEnum(VivaSessionStatus), nullable=False, default=VivaSessionStatus.PENDING)
+    warning_count = Column(Integer, nullable=False, default=0)
+    current_question_index = Column(Integer, nullable=False, default=0)
+    reference_photo_b64 = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    termination_reason = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_viva_sessions_file_created_at", "file_id", "created_at"),
+    )
+
+
+class VivaQuestion(Base):
+    """Generated viva questions tied to a session."""
+
+    __tablename__ = "viva_questions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    question_order = Column(Integer, nullable=False)
+    question_text = Column(Text, nullable=False)
+    expected_points_json = Column(JSONB, nullable=False, default=list)
+    asked_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_viva_questions_session_order", "session_id", "question_order"),
+    )
+
+
+class VivaTurn(Base):
+    """Stores each student answer turn and evaluator output."""
+
+    __tablename__ = "viva_turns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    question_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    answer_transcript = Column(Text, nullable=False, default="")
+    answer_audio_b64 = Column(Text, nullable=True)
+    score = Column(Numeric(6, 2), nullable=False, default=0)
+    max_score = Column(Numeric(6, 2), nullable=False, default=10)
+    strengths_json = Column(JSONB, nullable=False, default=list)
+    weaknesses_json = Column(JSONB, nullable=False, default=list)
+    feedback = Column(Text, nullable=False, default="")
+    latency_ms = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_viva_turns_session_created_at", "session_id", "created_at"),
+    )
+
+
+class VivaProctorEvent(Base):
+    """Stores frame-level proctoring checks and warning escalations."""
+
+    __tablename__ = "viva_proctor_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False, default="frame_check")
+    is_present = Column(Integer, nullable=False, default=1)
+    is_match = Column(Integer, nullable=False, default=1)
+    confidence = Column(Numeric(5, 4), nullable=False, default=1)
+    warning_count = Column(Integer, nullable=False, default=0)
+    action = Column(String(64), nullable=False, default="ok")
+    details_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_viva_proctor_session_created_at", "session_id", "created_at"),
+    )
+
+
+class VivaResult(Base):
+    """Final evaluated result snapshot for a viva session."""
+
+    __tablename__ = "viva_results"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), nullable=False, unique=True, index=True)
+    overall_score = Column(Numeric(6, 2), nullable=False, default=0)
+    max_score = Column(Numeric(6, 2), nullable=False, default=0)
+    strengths_json = Column(JSONB, nullable=False, default=list)
+    weak_areas_json = Column(JSONB, nullable=False, default=list)
+    recommendations_json = Column(JSONB, nullable=False, default=list)
+    question_breakdown_json = Column(JSONB, nullable=False, default=list)
+    summary = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

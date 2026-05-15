@@ -17,7 +17,14 @@ HYBRID_VECTOR_WEIGHT = min(
     max(float(os.environ.get("SEARCH_HYBRID_VECTOR_WEIGHT", "1.0")), 0.0),
     1.0,
 )
+QDRANT_GLOBAL_QUERY_EF = max(int(os.environ.get("SEARCH_QDRANT_GLOBAL_QUERY_EF", "64")), 0)
+QDRANT_SCOPED_QUERY_EF = max(int(os.environ.get("SEARCH_QDRANT_SCOPED_QUERY_EF", "128")), 0)
+GLOBAL_PROBE_TOP_K = max(int(os.environ.get("SEARCH_GLOBAL_PROBE_TOP_K", "24")), 1)
+GLOBAL_ROUTE_CANDIDATE_LIMIT = max(int(os.environ.get("SEARCH_GLOBAL_ROUTE_CANDIDATE_LIMIT", "2")), 1)
 VECTOR_DB_PROVIDER = os.environ.get("VECTOR_DB_PROVIDER", "pgvector")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", None)
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "document_chunks")
+QPAPER_SERVICE_URL = os.environ.get("QPAPER_SERVICE_URL", "http://qpaper:8000")
+QPAPER_DEFAULT_TOTAL_MARKS = int(os.environ.get("QPAPER_DEFAULT_TOTAL_MARKS", "100"))
+QPAPER_DEFAULT_MODE = os.environ.get("QPAPER_DEFAULT_MODE", "official")

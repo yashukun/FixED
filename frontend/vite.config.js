@@ -7,6 +7,7 @@ export default defineConfig(({ mode }) => {
   const ingestProxyTarget = env.VITE_INGEST_PROXY_TARGET || 'http://localhost:8001'
   const searchProxyTarget = env.VITE_SEARCH_PROXY_TARGET || 'http://localhost:8002'
   const qpaperProxyTarget = env.VITE_QPAPER_PROXY_TARGET || 'http://localhost:8003'
+  const vivaProxyTarget = env.VITE_VIVA_PROXY_TARGET || 'http://localhost:8004'
   const gatewayProxyTarget = env.VITE_GATEWAY_PROXY_TARGET || 'http://localhost:8000'
 
   return {
@@ -37,6 +38,11 @@ export default defineConfig(({ mode }) => {
           target: qpaperProxyTarget,
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api\/qpaper/, ''),
+        },
+        '/api/viva': {
+          target: vivaProxyTarget,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api\/viva/, ''),
         },
         '/api/gateway': {
           target: gatewayProxyTarget,

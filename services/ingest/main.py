@@ -71,7 +71,6 @@ async def upload(file: UploadFile = File(...)):
             status_code=413,
             detail=f"File too large. Max {settings.MAX_FILE_SIZE // (1024*1024)}MB.",
         )
-
     # Generate job id & storage key
     job_id = uuid.uuid4()
     filename = file.filename or "unknown.bin"

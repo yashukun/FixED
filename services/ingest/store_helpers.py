@@ -7,6 +7,15 @@ from db import BookChapter, Job, JobStatus, get_db_context
 VectorRecord = dict
 
 
+def _safe_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_vectors(
     file_id: str,
     filename: str,
@@ -19,13 +28,13 @@ def build_vectors(
             "values": embedding,
             "metadata": {
                 "file_id": file_id,
-                "chunk_index": idx,
+                "chunk_index": int(idx),
                 "text": chunk["text"],
                 "filename": filename,
                 "source": chunk["metadata"].get("source", filename),
-                "page_number": chunk["metadata"].get("page_number"),
+                "page_number": _safe_int(chunk["metadata"].get("page_number")),
                 "page_label": chunk["metadata"].get("page_label"),
-                "chapter_number": chunk["metadata"].get("chapter_number"),
+                "chapter_number": _safe_int(chunk["metadata"].get("chapter_number")),
             },
         }
         for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings))

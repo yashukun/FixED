@@ -1,4 +1,6 @@
 import { Button } from './ui/button'
+import { downloadPaperPdf } from '../lib/questionPaperPdf'
+import { normalizePaperEntry, sectionOrder, shortSectionLabels } from '../lib/questionPaperFormat'
 
 export default function ResultsViewer({ searchData, onSelectClarification, isStreaming = false }) {
   if (!searchData) {
@@ -32,6 +34,17 @@ export default function ResultsViewer({ searchData, onSelectClarification, isStr
   }
 
   const hasResults = Array.isArray(searchData.results) && searchData.results.length > 0
+  const isGeneratedPaper = searchData.response_kind === 'generated_paper' || Boolean(searchData.generated_paper)
+  const generatedPaper = normalizePaperEntry(searchData.generated_paper)
+  const sectionSummary = generatedPaper
+    ? sectionOrder
+        .map((key) => {
+          const rows = Array.isArray(generatedPaper.paper?.[key]) ? generatedPaper.paper[key] : []
+          const marks = rows.reduce((sum, row) => sum + (Number(row?.marks) || 0), 0)
+          return { key, count: rows.length, marks }
+        })
+        .filter((row) => row.count > 0)
+    : []
   const confidenceValues = hasResults ? searchData.results.map((row) => Number(row.score) || 0) : []
   const topConfidence = confidenceValues.length ? Math.max(...confidenceValues) : null
   const avgConfidence = confidenceValues.length
@@ -53,6 +66,39 @@ export default function ResultsViewer({ searchData, onSelectClarification, isStr
           {isStreaming && <span className="ml-1 inline-block animate-pulse text-blue-300">|</span>}
         </div>
       </div>
+
+      {isGeneratedPaper && generatedPaper && (
+        <div className="rounded-xl border border-fuchsia-500/40 bg-fuchsia-500/10 p-4">
+          <h4 className="mb-2 text-sm font-semibold text-fuchsia-200">Generated Question Paper</h4>
+          <div className="space-y-1 text-sm text-fuchsia-100">
+            <p><span className="font-medium">Name:</span> {generatedPaper.paper_name || generatedPaper.topic || '-'}</p>
+            <p><span className="font-medium">Topic:</span> {generatedPaper.topic || '-'}</p>
+            <p><span className="font-medium">Mode:</span> {generatedPaper.mode || '-'}</p>
+            <p><span className="font-medium">Total Marks:</span> {generatedPaper.total_marks || '-'}</p>
+            {generatedPaper.paper_id && (
+              <p><span className="font-medium">Paper ID:</span> {generatedPaper.paper_id}</p>
+            )}
+          </div>
+          {sectionSummary.length > 0 && (
+            <div className="mt-2 text-xs text-fuchsia-100">
+              {sectionSummary.map((row) => (
+                <p key={row.key}>
+                  {shortSectionLabels[row.key] || row.key}: {row.count} questions, {row.marks} marks
+                </p>
+              ))}
+            </div>
+          )}
+          <div className="mt-3">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => downloadPaperPdf(generatedPaper)}
+            >
+              Download PDF
+            </Button>
+          </div>
+        </div>
+      )}
 
       {hasResults && (
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
