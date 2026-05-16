@@ -26,6 +26,7 @@ from config import (  # noqa: E402
     DEFAULT_FACE_MATCH_THRESHOLD,
     DEFAULT_PER_QUESTION_LIMIT_SECONDS,
     DEFAULT_QUESTION_COUNT,
+    FOLLOWUP_MIN_COUNT,
     FOLLOWUP_MIN_RATIO,
     MAX_QUESTION_COUNT,
     MIN_QUESTION_COUNT,
@@ -161,6 +162,7 @@ class AnswerRequest(BaseModel):
     transcript: Optional[str] = None
     audio_b64: Optional[str] = None
     latency_ms: int = 0
+    question_id: Optional[str] = None
 
 
 class SessionSummary(BaseModel):
@@ -175,6 +177,9 @@ class SessionSummary(BaseModel):
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     termination_reason: Optional[str] = None
+    base_question_count: Optional[int] = None
+    followup_min_count: Optional[int] = None
+    total_question_target: Optional[int] = None
 
 
 class QuestionPayload(BaseModel):
@@ -243,11 +248,14 @@ def _parse_media_object_key(session_id: str, object_path: str) -> str:
 
 
 def _session_summary(session: VivaSession) -> SessionSummary:
+    base_question_count = int(session.question_count or 0)
+    followup_min_count = _followup_min_count(base_question_count)
+    total_question_target = base_question_count + followup_min_count
     return SessionSummary(
         session_id=str(session.id),
         status=session.status.value if hasattr(session.status, "value") else str(session.status),
         warning_count=int(session.warning_count or 0),
-        question_count=int(session.question_count or 0),
+        question_count=base_question_count,
         current_question_index=int(session.current_question_index or 0),
         topic=session.topic,
         file_id=session.file_id,
@@ -255,6 +263,9 @@ def _session_summary(session: VivaSession) -> SessionSummary:
         started_at=session.started_at.isoformat() if session.started_at else None,
         finished_at=session.finished_at.isoformat() if session.finished_at else None,
         termination_reason=session.termination_reason,
+        base_question_count=base_question_count,
+        followup_min_count=followup_min_count,
+        total_question_target=total_question_target,
     )
 
 
@@ -376,13 +387,35 @@ def _is_proctor_anomaly(result, threshold: float) -> tuple[bool, str]:
     return violated, reason
 
 
-def _followup_target(total_questions: int) -> int:
-    # "At least 60%" follow-up requirement from product spec.
-    return max(1, min(total_questions - 1, ceil(total_questions * FOLLOWUP_MIN_RATIO)))
+def _followup_min_count(base_question_count: int) -> int:
+    safe_base = max(int(base_question_count or 0), 0)
+    if safe_base <= 1:
+        return 0
+    if FOLLOWUP_MIN_COUNT is not None:
+        return max(0, min(safe_base - 1, int(FOLLOWUP_MIN_COUNT)))
+    return max(1, min(safe_base - 1, ceil(safe_base * FOLLOWUP_MIN_RATIO)))
 
 
-def _should_apply_followup(current_order: int, total_questions: int) -> bool:
-    return current_order <= _followup_target(total_questions)
+def _total_question_target(base_question_count: int) -> int:
+    safe_base = max(int(base_question_count or 0), 0)
+    return safe_base + _followup_min_count(safe_base)
+
+
+def _base_question_order(base_index: int, followup_min_count: int) -> int:
+    if base_index <= followup_min_count:
+        return (base_index * 2) - 1
+    return base_index + followup_min_count
+
+
+def _plan_question(order: int, base_question_count: int) -> dict[str, int | str]:
+    followup_count = _followup_min_count(base_question_count)
+    if order <= 0:
+        return {"kind": "base", "base_index": 1, "followup_index": 0}
+    if order <= followup_count * 2:
+        if order % 2 == 1:
+            return {"kind": "base", "base_index": ((order + 1) // 2), "followup_index": 0}
+        return {"kind": "followup", "base_index": (order // 2), "followup_index": (order // 2)}
+    return {"kind": "base", "base_index": order - followup_count, "followup_index": 0}
 
 
 def _generate_question_bank_with_llm(
@@ -445,6 +478,88 @@ def _generate_question_bank_with_llm(
         return normalized[:question_count]
     except Exception:
         return fallback
+
+
+def _ensure_base_question_bank(
+    db,
+    session: VivaSession,
+    cost_tracker: _CostTracker,
+    target_base_indexes: Optional[list[int]] = None,
+) -> None:
+    base_question_count = int(session.question_count or 0)
+    if base_question_count <= 0:
+        return
+    followup_count = _followup_min_count(base_question_count)
+    existing_by_order = {
+        int(row.question_order or 0): row
+        for row in db.execute(select(VivaQuestion).where(VivaQuestion.session_id == session.id)).scalars().all()
+    }
+    requested_base_indexes = target_base_indexes or list(range(1, base_question_count + 1))
+    valid_base_indexes = [
+        int(base_index)
+        for base_index in requested_base_indexes
+        if 1 <= int(base_index) <= base_question_count
+    ]
+    missing_base_indexes: list[int] = []
+    for base_index in valid_base_indexes:
+        planned_order = _base_question_order(base_index, followup_count)
+        row = existing_by_order.get(planned_order)
+        if row is None:
+            missing_base_indexes.append(base_index)
+    if not missing_base_indexes:
+        return
+
+    # During live submit transitions, create only missing required base questions
+    # to keep manual progression responsive.
+    if target_base_indexes:
+        now = datetime.utcnow()
+        for base_index in missing_base_indexes:
+            payload = _generate_question_with_llm(
+                topic=session.topic,
+                chapter_number=session.chapter_number,
+                question_count=base_question_count,
+                question_index=base_index - 1,
+                previous_question=None,
+                previous_answer=None,
+                cost_tracker=cost_tracker,
+                file_id=session.file_id,
+                session_id=str(session.id),
+            )
+            question_order = _base_question_order(base_index, followup_count)
+            db.add(
+                VivaQuestion(
+                    session_id=session.id,
+                    question_order=question_order,
+                    question_text=payload["question"],
+                    expected_points_json=payload["expected_points"],
+                    asked_at=now,
+                )
+            )
+        db.flush()
+        return
+
+    question_bank = _generate_question_bank_with_llm(
+        topic=session.topic,
+        chapter_number=session.chapter_number,
+        question_count=base_question_count,
+        cost_tracker=cost_tracker,
+        file_id=session.file_id,
+        session_id=str(session.id),
+    )
+    now = datetime.utcnow()
+    for base_index in missing_base_indexes:
+        payload = question_bank[base_index - 1]
+        question_order = _base_question_order(base_index, followup_count)
+        db.add(
+            VivaQuestion(
+                session_id=session.id,
+                question_order=question_order,
+                question_text=payload["question"],
+                expected_points_json=payload["expected_points"],
+                asked_at=now,
+            )
+        )
+    db.flush()
 
 
 def _generate_question_with_llm(
@@ -627,6 +742,144 @@ def _serialize_question(question: VivaQuestion, with_audio: bool = False) -> Que
         question_text=question.question_text,
         expected_points=[str(v) for v in (question.expected_points_json or [])],
         audio_b64=audio_b64,
+    )
+
+
+def _find_session_question_by_id(db, session_id: Any, question_id: str) -> VivaQuestion | None:
+    rows = db.execute(select(VivaQuestion).where(VivaQuestion.session_id == session_id)).scalars().all()
+    return next((row for row in rows if str(row.id) == str(question_id)), None)
+
+
+def _find_latest_turn_for_question(db, session_id: Any, question_id: Any) -> VivaTurn | None:
+    rows = db.execute(select(VivaTurn).where(VivaTurn.session_id == session_id)).scalars().all()
+    matched = [row for row in rows if str(row.question_id) == str(question_id)]
+    if not matched:
+        return None
+    return sorted(matched, key=lambda row: row.created_at or datetime.min)[-1]
+
+
+def _build_idempotent_submit_recovery(
+    db,
+    session: VivaSession,
+    submitted_question: VivaQuestion,
+    submitted_turn: VivaTurn,
+    total_question_target: int,
+    tracker: _CostTracker,
+) -> dict[str, Any] | None:
+    turn_payload = {
+        "question_id": str(submitted_question.id),
+        "question_order": int(submitted_question.question_order or 0),
+        "answer_transcript": submitted_turn.answer_transcript,
+        "evaluation": {
+            "score": float(submitted_turn.score or 0),
+            "max_score": float(submitted_turn.max_score or 0),
+            "strengths": submitted_turn.strengths_json or [],
+            "weaknesses": submitted_turn.weaknesses_json or [],
+            "feedback": submitted_turn.feedback,
+        },
+    }
+    # Duplicate submit for an already-accepted question should return authoritative state.
+    if int(session.current_question_index or 0) >= int(total_question_target or 0):
+        finalized = _finalize_session_with_db(db, session.id)
+        return {
+            "session": finalized["session"],
+            "turn": turn_payload,
+            "done": True,
+            "result": finalized["result"],
+            "cost": tracker.summary(),
+            "recovered_conflict": True,
+        }
+    next_order = int(session.current_question_index or 0) + 1
+    next_question = (
+        db.execute(
+            select(VivaQuestion)
+            .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == next_order)
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if next_question is None:
+        return None
+    next_question.asked_at = datetime.utcnow()
+    db.flush()
+    return {
+        "session": _session_summary(session),
+        "turn": turn_payload,
+        "next_question": _serialize_question(next_question, with_audio=True),
+        "done": False,
+        "cost": tracker.summary(),
+        "recovered_conflict": True,
+    }
+
+
+def _ensure_question_for_order(
+    db,
+    session: VivaSession,
+    order: int,
+    cost_tracker: _CostTracker,
+    total_question_target: int,
+) -> VivaQuestion | None:
+    question = (
+        db.execute(
+            select(VivaQuestion)
+            .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == int(order))
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if question is not None:
+        return question
+
+    base_question_count = int(session.question_count or 0)
+    if base_question_count <= 0:
+        return None
+    plan = _plan_question(int(order), base_question_count)
+    if plan["kind"] == "base":
+        _ensure_base_question_bank(db, session, cost_tracker, target_base_indexes=[int(plan["base_index"])])
+    else:
+        previous_order = max(int(order) - 1, 1)
+        previous_question = (
+            db.execute(
+                select(VivaQuestion)
+                .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == previous_order)
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        previous_turn = _find_latest_turn_for_question(db, session.id, previous_question.id) if previous_question else None
+        if previous_question and previous_turn:
+            followup_data = _generate_question_with_llm(
+                topic=session.topic,
+                chapter_number=session.chapter_number,
+                question_count=total_question_target,
+                question_index=int(order) - 1,
+                previous_question=previous_question.question_text,
+                previous_answer=previous_turn.answer_transcript,
+                cost_tracker=cost_tracker,
+                file_id=session.file_id,
+                session_id=str(session.id),
+            )
+            db.add(
+                VivaQuestion(
+                    session_id=session.id,
+                    question_order=int(order),
+                    question_text=followup_data["question"],
+                    expected_points_json=followup_data["expected_points"],
+                    asked_at=datetime.utcnow(),
+                )
+            )
+    db.flush()
+    return (
+        db.execute(
+            select(VivaQuestion)
+            .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == int(order))
+            .limit(1)
+        )
+        .scalars()
+        .first()
     )
 
 
@@ -884,25 +1137,26 @@ def start_session(payload: StartSessionRequest):
         )
         db.add(session)
         db.flush()
-        question_bank = _generate_question_bank_with_llm(
+        first_question_data = _generate_question_with_llm(
             topic=payload.topic.strip(),
             chapter_number=payload.chapter_number,
             question_count=payload.question_count,
+            question_index=0,
+            previous_question=None,
+            previous_answer=None,
             cost_tracker=tracker,
             file_id=payload.file_id,
             session_id=str(session.id),
         )
-        questions: list[VivaQuestion] = []
-        for idx, row in enumerate(question_bank):
-            question = VivaQuestion(
-                session_id=session.id,
-                question_order=idx + 1,
-                question_text=row["question"],
-                expected_points_json=row["expected_points"],
-                asked_at=now,
-            )
-            db.add(question)
-            questions.append(question)
+        first_question = VivaQuestion(
+            session_id=session.id,
+            question_order=1,
+            question_text=first_question_data["question"],
+            expected_points_json=first_question_data["expected_points"],
+            asked_at=now,
+        )
+        db.add(first_question)
+        followup_min_count = _followup_min_count(int(session.question_count or 0))
         db.add(
             VivaProctorEvent(
                 session_id=session.id,
@@ -917,14 +1171,16 @@ def start_session(payload: StartSessionRequest):
                     "chapter_number": session.chapter_number,
                     "question_count": session.question_count,
                     "session_limit_seconds": session.session_limit_seconds,
-                    "followup_target": _followup_target(int(session.question_count or 0)),
+                    "base_question_count": int(session.question_count or 0),
+                    "followup_min_count": followup_min_count,
+                    "total_question_target": int(session.question_count or 0) + followup_min_count,
                 },
             )
         )
         db.flush()
         return {
             "session": _session_summary(session),
-            "current_question": _serialize_question(questions[0], with_audio=True),
+            "current_question": _serialize_question(first_question, with_audio=False),
             "cost": tracker.summary(),
         }
 
@@ -1123,18 +1379,63 @@ def submit_answer(session_id: str, payload: AnswerRequest):
             finalized = _finalize_session_with_db(db, session.id, force_termination_reason="session_timeout")
             return {"session": finalized["session"], "terminated": True, "result": finalized["result"]}
 
+        base_question_count = int(session.question_count or 0)
+        total_question_target = _total_question_target(base_question_count)
         current_order = int(session.current_question_index or 0) + 1
-        question = (
-            db.execute(
-                select(VivaQuestion)
-                .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == current_order)
-                .limit(1)
-            )
-            .scalars()
-            .first()
+        submitted_question_id = str(payload.question_id or "").strip()
+        question = _ensure_question_for_order(
+            db=db,
+            session=session,
+            order=current_order,
+            cost_tracker=tracker,
+            total_question_target=total_question_target,
         )
         if question is None:
+            if submitted_question_id:
+                submitted_question = _find_session_question_by_id(db, session.id, submitted_question_id)
+                if submitted_question and int(submitted_question.question_order or 0) == current_order:
+                    question = submitted_question
+            if question is None:
+                question = _ensure_question_for_order(
+                    db=db,
+                    session=session,
+                    order=current_order,
+                    cost_tracker=tracker,
+                    total_question_target=total_question_target,
+                )
+        if question is None:
+            if submitted_question_id:
+                submitted_question = _find_session_question_by_id(db, session.id, submitted_question_id)
+                submitted_turn = (
+                    _find_latest_turn_for_question(db, session.id, submitted_question.id) if submitted_question else None
+                )
+                if submitted_question and submitted_turn:
+                    recovered = _build_idempotent_submit_recovery(
+                        db=db,
+                        session=session,
+                        submitted_question=submitted_question,
+                        submitted_turn=submitted_turn,
+                        total_question_target=total_question_target,
+                        tracker=tracker,
+                    )
+                    if recovered is not None:
+                        return recovered
             raise HTTPException(status_code=409, detail="No active question found for session")
+        if submitted_question_id and submitted_question_id != str(question.id):
+            submitted_question = _find_session_question_by_id(db, session.id, submitted_question_id)
+            submitted_turn = _find_latest_turn_for_question(db, session.id, submitted_question.id) if submitted_question else None
+            if submitted_question and submitted_turn:
+                recovered = _build_idempotent_submit_recovery(
+                    db=db,
+                    session=session,
+                    submitted_question=submitted_question,
+                    submitted_turn=submitted_turn,
+                    total_question_target=total_question_target,
+                    tracker=tracker,
+                )
+                if recovered is not None:
+                    return recovered
+            raise HTTPException(status_code=409, detail="Submitted question is stale for current session state")
         question_timed_out = _question_timed_out(question, int(session.per_question_limit_seconds or 0))
 
         transcript = (payload.transcript or "").strip()
@@ -1187,7 +1488,7 @@ def submit_answer(session_id: str, payload: AnswerRequest):
         db.add(turn)
         session.current_question_index = current_order
 
-        if session.current_question_index >= session.question_count:
+        if session.current_question_index >= total_question_target:
             session.status = VivaSessionStatus.COMPLETED
             session.finished_at = datetime.utcnow()
             finalized = _finalize_session_with_db(db, session.id)
@@ -1204,33 +1505,50 @@ def submit_answer(session_id: str, payload: AnswerRequest):
                 "cost": tracker.summary(),
             }
 
-        next_index = int(session.current_question_index or 0)
+        next_order = int(session.current_question_index or 0) + 1
+        plan = _plan_question(next_order, base_question_count)
         next_question = (
             db.execute(
                 select(VivaQuestion)
-                .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == (next_index + 1))
+                .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == next_order)
                 .limit(1)
             )
             .scalars()
             .first()
         )
-        if next_question is None:
-            raise HTTPException(status_code=409, detail="Next question not found for session")
-
-        if _should_apply_followup(current_order=current_order, total_questions=int(session.question_count or 0)):
+        if next_question is None and plan["kind"] == "base":
+            _ensure_base_question_bank(db, session, tracker, target_base_indexes=[int(plan["base_index"])])
+            next_question = (
+                db.execute(
+                    select(VivaQuestion)
+                    .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == next_order)
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+        if next_question is None and plan["kind"] == "followup":
             followup_data = _generate_question_with_llm(
                 topic=session.topic,
                 chapter_number=session.chapter_number,
-                question_count=int(session.question_count or 0),
-                question_index=next_index,
+                question_count=total_question_target,
+                question_index=next_order - 1,
                 previous_question=question.question_text,
                 previous_answer=transcript,
                 cost_tracker=tracker,
                 file_id=session.file_id,
                 session_id=str(session.id),
             )
-            next_question.question_text = followup_data["question"]
-            next_question.expected_points_json = followup_data["expected_points"]
+            next_question = VivaQuestion(
+                session_id=session.id,
+                question_order=next_order,
+                question_text=followup_data["question"],
+                expected_points_json=followup_data["expected_points"],
+                asked_at=datetime.utcnow(),
+            )
+            db.add(next_question)
+        if next_question is None:
+            raise HTTPException(status_code=409, detail="Next question not found for session")
 
         next_question.asked_at = datetime.utcnow()
         db.flush()

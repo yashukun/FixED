@@ -6,6 +6,35 @@ import { Input } from '../components/ui/input'
 import { Badge } from '../components/ui/badge'
 import { ErrorBanner } from '../components/feedback'
 
+export function shouldAutoSubmitCurrentQuestion({
+  stage,
+  questionId,
+  secondsLeft,
+  busy,
+  submitInFlightQuestionId,
+  timeoutAutoSubmitQuestionId,
+  deadlineAtMs,
+  nowMs = Date.now(),
+}) {
+  if (stage !== 'session' || !questionId) return false
+  if (!Number.isFinite(deadlineAtMs)) return false
+  if (secondsLeft > 0 || busy) return false
+  if (nowMs < deadlineAtMs) return false
+  if (submitInFlightQuestionId === questionId) return false
+  if (timeoutAutoSubmitQuestionId === questionId) return false
+  return true
+}
+
+export function isRecoverableSubmitConflict(message) {
+  const normalized = String(message || '').toLowerCase()
+  return (
+    normalized.includes('no active question found for session') ||
+    normalized.includes('next question not found for session') ||
+    normalized.includes('session is not active') ||
+    normalized.includes('submitted question is stale for current session state')
+  )
+}
+
 function imageDataToBase64(dataUrl) {
   if (!dataUrl) return ''
   return dataUrl.replace(/^data:image\/\w+;base64,/, '')
@@ -53,9 +82,9 @@ export default function VivaPage() {
   const [warnings, setWarnings] = useState(0)
   const [sessionError, setSessionError] = useState('')
   const [answerText, setAnswerText] = useState('')
-  const [latestTurn, setLatestTurn] = useState(null)
   const [results, setResults] = useState(null)
   const [secondsLeft, setSecondsLeft] = useState(0)
+  const [questionDeadlineAtMs, setQuestionDeadlineAtMs] = useState(null)
   const [lastProctorAt, setLastProctorAt] = useState(null)
   const [history, setHistory] = useState([])
   const [historyError, setHistoryError] = useState('')
@@ -67,6 +96,7 @@ export default function VivaPage() {
   const speechRecognitionRef = useRef(null)
   const proctorInFlightRef = useRef(false)
   const timeoutAutoSubmitRef = useRef('')
+  const submitInFlightQuestionRef = useRef('')
 
   const readyJobs = useMemo(() => {
     if (!Array.isArray(jobs)) return []
@@ -155,12 +185,12 @@ export default function VivaPage() {
 
   useEffect(() => {
     if (!currentQuestion || stage !== 'session') return undefined
-    const startedAt = Date.now()
     const maxSeconds = Number(session?.per_question_limit_seconds || perQuestionLimit || 60)
+    const deadlineAt = Date.now() + (maxSeconds * 1000)
+    setQuestionDeadlineAtMs(deadlineAt)
     setSecondsLeft(maxSeconds)
     const timer = window.setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startedAt) / 1000)
-      const next = Math.max(maxSeconds - elapsed, 0)
+      const next = Math.max(Math.ceil((deadlineAt - Date.now()) / 1000), 0)
       setSecondsLeft(next)
     }, 1000)
     return () => window.clearInterval(timer)
@@ -269,44 +299,129 @@ export default function VivaPage() {
   }
 
   const submitAnswer = async (opts = {}) => {
-    const allowEmpty = Boolean(opts.allowEmpty)
+    const allowEmpty = Boolean(opts?.allowEmpty)
+    const source = opts?.source === 'auto' ? 'auto' : 'manual'
+    const questionId = currentQuestion?.question_id || ''
+    const transcript = answerText.trim()
     if (!session?.session_id) return
-    if (!allowEmpty && !answerText.trim()) {
+    if (!questionId) return
+    if (!allowEmpty && !transcript) {
       setSessionError('Please provide an answer before submitting.')
       return
     }
+    if (submitInFlightQuestionRef.current === questionId) return
+    if (source === 'manual') {
+      // Manual submit should always win over timer fallback for this question.
+      timeoutAutoSubmitRef.current = questionId
+    }
     setSessionError('')
+    submitInFlightQuestionRef.current = questionId
     setBusy(true)
     try {
       const response = await api.submitVivaAnswer(session.session_id, {
-        transcript: answerText.trim(),
+        transcript,
+        question_id: questionId,
       })
-      setLatestTurn(response.turn || null)
       setSession(response.session || session)
       setAnswerText('')
       if (response.done || response.terminated || (response.result && !response.next_question)) {
+        timeoutAutoSubmitRef.current = ''
         setResults(response?.result ? { ...response.result, session: response.session } : null)
         setStage('results')
         refreshHistory()
         return
       }
       timeoutAutoSubmitRef.current = ''
+      setQuestionDeadlineAtMs(null)
       setCurrentQuestion(response.next_question || null)
       speakQuestion(response.next_question?.question_text)
     } catch (err) {
-      setSessionError(err.message || 'Failed to submit answer')
+      const message = err?.message || 'Failed to submit answer'
+      const isConflict = isRecoverableSubmitConflict(message)
+
+      if (isConflict && session?.session_id) {
+        // Prevent timer-driven resubmission loops while we reconcile server state.
+        timeoutAutoSubmitRef.current = questionId
+        try {
+          const latest = await api.getVivaSession(session.session_id)
+          if (latest?.session) {
+            setSession(latest.session)
+          }
+          if (latest?.current_question?.question_id) {
+            const nextId = latest.current_question.question_id
+            if (nextId !== questionId) {
+              setQuestionDeadlineAtMs(null)
+              setCurrentQuestion(latest.current_question)
+              setAnswerText('')
+              setSessionError('')
+              speakQuestion(latest.current_question.question_text)
+            } else {
+              // If IDs match but server still returns conflict, retry once without question_id.
+              const retryResponse = await api.submitVivaAnswer(session.session_id, {
+                transcript,
+              })
+              setSession(retryResponse.session || latest.session || session)
+              setAnswerText('')
+              if (
+                retryResponse.done ||
+                retryResponse.terminated ||
+                (retryResponse.result && !retryResponse.next_question)
+              ) {
+                timeoutAutoSubmitRef.current = ''
+                setResults(retryResponse?.result ? { ...retryResponse.result, session: retryResponse.session } : null)
+                setStage('results')
+                refreshHistory()
+              } else {
+                timeoutAutoSubmitRef.current = ''
+                setQuestionDeadlineAtMs(null)
+                setCurrentQuestion(retryResponse.next_question || latest.current_question)
+                setSessionError('')
+                speakQuestion(retryResponse.next_question?.question_text || latest.current_question.question_text)
+              }
+            }
+            return
+          }
+
+          const finalized = await api.getVivaResults(session.session_id)
+          if (finalized?.result) {
+            setResults({ ...finalized.result, session: finalized.session })
+            setStage('results')
+            refreshHistory()
+            return
+          }
+        } catch {
+          // Fall through to show the original submit error.
+        }
+      }
+      if (source !== 'auto' && timeoutAutoSubmitRef.current === questionId) {
+        timeoutAutoSubmitRef.current = ''
+      }
+      setSessionError(message)
     } finally {
+      if (submitInFlightQuestionRef.current === questionId) {
+        submitInFlightQuestionRef.current = ''
+      }
       setBusy(false)
     }
   }
 
   useEffect(() => {
-    if (stage !== 'session' || !currentQuestion?.question_id) return
-    if (secondsLeft > 0 || busy) return
-    if (timeoutAutoSubmitRef.current === currentQuestion.question_id) return
+    if (
+      !shouldAutoSubmitCurrentQuestion({
+        stage,
+        questionId: currentQuestion?.question_id,
+        secondsLeft,
+        busy,
+        submitInFlightQuestionId: submitInFlightQuestionRef.current,
+        timeoutAutoSubmitQuestionId: timeoutAutoSubmitRef.current,
+        deadlineAtMs: questionDeadlineAtMs,
+      })
+    ) {
+      return
+    }
     timeoutAutoSubmitRef.current = currentQuestion.question_id
-    submitAnswer({ allowEmpty: true })
-  }, [secondsLeft, stage, currentQuestion?.question_id, busy])
+    submitAnswer({ allowEmpty: true, source: 'auto' })
+  }, [secondsLeft, stage, currentQuestion?.question_id, busy, questionDeadlineAtMs])
 
   const finishNow = async () => {
     if (!session?.session_id) return
@@ -435,7 +550,8 @@ export default function VivaPage() {
           <CardHeader>
             <CardTitle>Live Viva Session</CardTitle>
             <CardDescription>
-              {session?.current_question_index || 0}/{session?.question_count || 0} answered • {secondsLeft}s left for current question
+              {session?.current_question_index || 0}/
+              {session?.total_question_target || session?.question_count || 0} answered • {secondsLeft}s left for current question
               {lastProctorAt ? ` • Last proctor check: ${new Date(lastProctorAt).toLocaleTimeString()}` : ''}
             </CardDescription>
           </CardHeader>
@@ -455,19 +571,12 @@ export default function VivaPage() {
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={() => speakQuestion(currentQuestion?.question_text)}>Repeat Question</Button>
                 <Button variant="outline" onClick={startListening}>Start Speech-to-Text</Button>
-                <Button onClick={submitAnswer} disabled={busy}>{busy ? 'Submitting...' : 'Submit Answer'}</Button>
+                <Button onClick={submitAnswer} disabled={busy || !answerText.trim()}>
+                  {busy ? 'Submitting...' : 'Submit Answer'}
+                </Button>
                 <Button variant="outline" onClick={finishNow} disabled={busy}>Finish Session</Button>
               </div>
             </div>
-            {latestTurn ? (
-              <div className="rounded-lg border border-slate-800 p-3">
-                <p className="text-sm text-slate-200">
-                  Last score: {Number(latestTurn.evaluation?.score || 0).toFixed(1)}/
-                  {Number(latestTurn.evaluation?.max_score || 10).toFixed(1)}
-                </p>
-                <p className="mt-1 text-xs text-slate-400">{latestTurn.evaluation?.feedback}</p>
-              </div>
-            ) : null}
           </CardContent>
         </Card>
       ) : null}
