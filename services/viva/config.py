@@ -1,6 +1,13 @@
 import os
 
 CHAT_MODEL = os.environ.get("VIVA_CHAT_MODEL", "gpt-4o-mini")
+EMBED_MODEL = (
+    os.environ.get("VIVA_EMBED_MODEL")
+    or os.environ.get("SEARCH_EMBED_MODEL")
+    or os.environ.get("QPAPER_EMBED_MODEL")
+    or os.environ.get("INGEST_EMBED_MODEL")
+    or "text-embedding-3-large"
+)
 STT_MODEL = os.environ.get("VIVA_STT_MODEL", "gpt-4o-mini-transcribe")
 TTS_MODEL = os.environ.get("VIVA_TTS_MODEL", "gpt-4o-mini-tts")
 VISION_MODEL = os.environ.get("VIVA_VISION_MODEL", "gpt-4o-mini")
@@ -9,6 +16,9 @@ VECTOR_DB_PROVIDER = os.environ.get("VECTOR_DB_PROVIDER", "pgvector")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", None)
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "document_chunks")
+VIVA_RETRIEVAL_TOP_K = int(os.environ.get("VIVA_RETRIEVAL_TOP_K", "20"))
+VIVA_MAX_CONTEXT_CHARS = int(os.environ.get("VIVA_MAX_CONTEXT_CHARS", "20000"))
+VIVA_MAX_CHUNK_CHARS = int(os.environ.get("VIVA_MAX_CHUNK_CHARS", "900"))
 
 MAX_QUESTION_COUNT = int(os.environ.get("VIVA_MAX_QUESTION_COUNT", "10"))
 MIN_QUESTION_COUNT = int(os.environ.get("VIVA_MIN_QUESTION_COUNT", "5"))

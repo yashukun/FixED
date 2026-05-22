@@ -8,6 +8,7 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { downloadPaperPdf } from '../lib/questionPaperPdf'
 import { flattenQuestions, normalizePaperEntry } from '../lib/questionPaperFormat'
+import { useCost } from '../context/useCost'
 
 function EventList({ events }) {
   return (
@@ -28,6 +29,7 @@ function EventList({ events }) {
 const objectiveSections = new Set(['mcq', 'true_false', 'fill_blank'])
 
 export default function UpcomingPage() {
+  const { addCost } = useCost()
   const loadUpcoming = useCallback(() => api.getUpcomingEvents(), [])
   const loadBooks = useCallback(() => api.getAllJobs(), [])
   const loadHistory = useCallback(() => api.getQuestionPaperHistory({ limit: 8 }), [])
@@ -62,19 +64,7 @@ export default function UpcomingPage() {
     })
   }, [jobs])
 
-  const mergedEvents = useMemo(() => {
-    const base = Array.isArray(data?.events) ? data.events : []
-    const scheduled = Array.isArray(paperHistory)
-      ? paperHistory.slice(0, 3).map((paper) => ({
-          id: `paper-${paper.paper_id}`,
-          title: `${paper.topic} (${paper.mode})`,
-          when: new Date(paper.created_at).toLocaleString(),
-          subject: paper.file_id,
-          kind: 'exam',
-        }))
-      : []
-    return [...scheduled, ...base]
-  }, [data, paperHistory])
+  const mergedEvents = useMemo(() => (Array.isArray(data?.events) ? data.events : []), [data])
 
   const normalizedPapers = useMemo(
     () => (Array.isArray(paperHistory) ? paperHistory.map(normalizePaperEntry).filter(Boolean) : []),
@@ -142,6 +132,9 @@ export default function UpcomingPage() {
     try {
       setSubmitting(true)
       const result = await api.generateQuestionPaper(payload)
+      if (typeof result?.cost?.usd === 'number') {
+        addCost(result.cost.usd)
+      }
       const normalizedResult = normalizePaperEntry(result)
       const name = examTitle.trim() || result.topic
       setSuccessMessage(
@@ -212,7 +205,7 @@ export default function UpcomingPage() {
       <Card>
         <CardHeader>
           <CardTitle>Scheduled Tests</CardTitle>
-          <CardDescription>Timeline from teacher scheduling feed</CardDescription>
+          <CardDescription>Timeline from live generated papers and viva sessions</CardDescription>
         </CardHeader>
         <EventList events={mergedEvents} />
       </Card>
@@ -443,7 +436,7 @@ export default function UpcomingPage() {
           </CardContent>
         </Card>
       ) : null}
-      <p className="text-xs text-slate-500">Data source: {data.source}</p>
+      <p className="text-xs text-slate-500">Live upcoming activity feed.</p>
     </div>
   )
 }

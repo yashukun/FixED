@@ -5,6 +5,7 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Badge } from '../components/ui/badge'
 import { ErrorBanner } from '../components/feedback'
+import { useCost } from '../context/useCost'
 
 export function shouldAutoSubmitCurrentQuestion({
   stage,
@@ -61,6 +62,7 @@ function resolveFramePreview(sessionId, details) {
 }
 
 export default function VivaPage() {
+  const { startLive, commitLive, clearLive, addCost } = useCost()
   const [jobs, setJobs] = useState([])
   const [chapters, setChapters] = useState([])
   const [loadError, setLoadError] = useState('')
@@ -157,6 +159,9 @@ export default function VivaPage() {
       try {
         proctorInFlightRef.current = true
         const resp = await api.vivaProctorFrame(session.session_id, frame)
+        if (typeof resp?.cost?.usd === 'number') {
+          addCost(resp.cost.usd)
+        }
         setWarnings((prev) => Math.max(prev, Number(resp.warnings || 0)))
         setLastProctorAt(new Date().toISOString())
         if (resp.action === 'terminated') {
@@ -276,6 +281,7 @@ export default function VivaPage() {
       return
     }
     setBusy(true)
+    startLive('Viva start')
     try {
       const started = await api.startVivaSession({
         file_id: fileId,
@@ -286,12 +292,18 @@ export default function VivaPage() {
       })
       const sessionId = started?.session?.session_id
       await api.setVivaReferencePhoto(sessionId, referenceImageB64)
+      if (typeof started?.cost?.usd === 'number') {
+        commitLive(started.cost.usd)
+      } else {
+        clearLive()
+      }
       setSession(started.session)
       setCurrentQuestion(started.current_question)
       setWarnings(0)
       setStage('session')
       speakQuestion(started.current_question?.question_text)
     } catch (err) {
+      clearLive()
       setSessionError(err.message || 'Failed to start viva session')
     } finally {
       setBusy(false)
@@ -317,11 +329,17 @@ export default function VivaPage() {
     setSessionError('')
     submitInFlightQuestionRef.current = questionId
     setBusy(true)
+    startLive('Viva answer')
     try {
       const response = await api.submitVivaAnswer(session.session_id, {
         transcript,
         question_id: questionId,
       })
+      if (typeof response?.cost?.usd === 'number') {
+        commitLive(response.cost.usd)
+      } else {
+        clearLive()
+      }
       setSession(response.session || session)
       setAnswerText('')
       if (response.done || response.terminated || (response.result && !response.next_question)) {
@@ -336,6 +354,7 @@ export default function VivaPage() {
       setCurrentQuestion(response.next_question || null)
       speakQuestion(response.next_question?.question_text)
     } catch (err) {
+      clearLive()
       const message = err?.message || 'Failed to submit answer'
       const isConflict = isRecoverableSubmitConflict(message)
 
@@ -426,13 +445,16 @@ export default function VivaPage() {
   const finishNow = async () => {
     if (!session?.session_id) return
     setBusy(true)
+    startLive('Viva finish')
     try {
       const resp = await api.finishVivaSession(session.session_id)
+      clearLive()
       setResults(resp?.result ? { ...resp.result, session: resp.session } : null)
       setSession(resp.session || session)
       setStage('results')
       refreshHistory()
     } catch (err) {
+      clearLive()
       setSessionError(err.message || 'Failed to finish session')
     } finally {
       setBusy(false)

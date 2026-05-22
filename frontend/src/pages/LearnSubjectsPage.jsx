@@ -22,26 +22,35 @@ export default function LearnSubjectsPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        {data.subjects.map((subject) => (
-          <Card key={subject.id}>
+        {data.subjects.length === 0 ? (
+          <Card>
             <CardHeader>
-              <CardTitle>{subject.name}</CardTitle>
-              <CardDescription>{subject.teacher}</CardDescription>
+              <CardTitle>No subjects yet</CardTitle>
+              <CardDescription>Upload and process documents to generate live subject analytics.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-slate-400">Assignments</span>
-                <span className="font-semibold text-white">{subject.pendingAssignments}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-slate-400">Progress</span>
-                <Badge variant="info">{subject.progress}%</Badge>
-              </div>
-            </CardContent>
           </Card>
-        ))}
+        ) : (
+          data.subjects.map((subject) => (
+            <Card key={subject.id}>
+              <CardHeader>
+                <CardTitle>{subject.name}</CardTitle>
+                <CardDescription>{subject.teacher}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Assignments</span>
+                  <span className="font-semibold text-white">{subject.pendingAssignments}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Progress</span>
+                  <Badge variant="info">{subject.progress}%</Badge>
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        )}
       </div>
-      <p className="text-xs text-slate-500">Data source: {data.source}</p>
+      <p className="text-xs text-slate-500">Live subject insights from current workspace activity.</p>
     </div>
   )
 }

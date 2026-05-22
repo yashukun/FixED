@@ -70,9 +70,33 @@ const splitSseEvents = (buffer) => {
 }
 
 export const api = {
+  getDashboardNav: async () => {
+    const res = await fetch(`${GATEWAY_API}/dashboard/nav`)
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch dashboard navigation'))
+    return res.json()
+  },
+
   getDashboardOverview: async () => {
     const res = await fetch(`${GATEWAY_API}/dashboard/overview`)
     if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch dashboard overview'))
+    return res.json()
+  },
+
+  getDashboardAnalyticsSummary: async () => {
+    const res = await fetch(`${GATEWAY_API}/dashboard/analytics/summary`)
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch analytics summary'))
+    return res.json()
+  },
+
+  getDashboardAnalyticsTimeseries: async () => {
+    const res = await fetch(`${GATEWAY_API}/dashboard/analytics/timeseries`)
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch analytics timeseries'))
+    return res.json()
+  },
+
+  getDashboardAnalyticsBreakdown: async () => {
+    const res = await fetch(`${GATEWAY_API}/dashboard/analytics/breakdown`)
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch analytics breakdown'))
     return res.json()
   },
 

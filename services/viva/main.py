@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import re
 import sys
@@ -14,6 +15,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from openai import OpenAI
 from pydantic import BaseModel, Field, model_validator
+from qdrant_client import QdrantClient
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 from sqlalchemy import desc, select
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -26,6 +29,7 @@ from config import (  # noqa: E402
     DEFAULT_FACE_MATCH_THRESHOLD,
     DEFAULT_PER_QUESTION_LIMIT_SECONDS,
     DEFAULT_QUESTION_COUNT,
+    EMBED_MODEL,
     FOLLOWUP_MIN_COUNT,
     FOLLOWUP_MIN_RATIO,
     MAX_QUESTION_COUNT,
@@ -38,15 +42,23 @@ from config import (  # noqa: E402
     PROCTOR_WINDOW_ANOMALY_THRESHOLD,
     PROCTOR_WINDOW_SIZE,
     PROCTOR_VIOLATE_ON_AMBIGUOUS,
+    QDRANT_API_KEY,
+    QDRANT_COLLECTION,
+    QDRANT_URL,
     STT_MODEL,
     TTS_MODEL,
+    VECTOR_DB_PROVIDER,
+    VIVA_MAX_CHUNK_CHARS,
+    VIVA_MAX_CONTEXT_CHARS,
     VIVA_MEDIA_BUCKET,
+    VIVA_RETRIEVAL_TOP_K,
     VIVA_STORE_ALL_FRAMES,
     VISION_MODEL,
 )
-from cost import compute_chat_cost, parse_usage_tokens, record_cost  # noqa: E402
+from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost  # noqa: E402
 from db import (  # noqa: E402
     ApiCostEvent,
+    DocumentChunk,
     VivaProctorEvent,
     VivaQuestion,
     VivaResult,
@@ -68,9 +80,11 @@ from providers.face import verify_face  # noqa: E402
 from providers.voice import synthesize_question_audio, transcribe_audio  # noqa: E402
 
 app = FastAPI(title="FixED - Viva Service")
+logger = logging.getLogger(__name__)
 
 _openai_client = None
 _storage_backend = None
+_qdrant_client = None
 
 
 class CostBreakdown(BaseModel):
@@ -101,6 +115,49 @@ class _CostTracker:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+        self._append(
+            kind=kind,
+            model=model,
+            file_id=file_id,
+            meta=meta,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            usd_decimal=usd_decimal,
+        )
+
+    def add_embedding(
+        self,
+        kind: str,
+        model: str,
+        usage: Any,
+        file_id: Optional[str] = None,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> None:
+        prompt_tokens, completion_tokens, total_tokens = parse_usage_tokens(usage)
+        usd_decimal = compute_embedding_cost(model=model, total_tokens=total_tokens)
+        self._append(
+            kind=kind,
+            model=model,
+            file_id=file_id,
+            meta=meta,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            usd_decimal=usd_decimal,
+        )
+
+    def _append(
+        self,
+        kind: str,
+        model: str,
+        file_id: Optional[str],
+        meta: Optional[dict[str, Any]],
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        usd_decimal: Decimal,
+    ) -> None:
         self._total += usd_decimal
         self._rows.append(
             CostBreakdown(
@@ -126,6 +183,18 @@ class _CostTracker:
 
     def summary(self) -> dict[str, Any]:
         return {"usd": float(self._total), "breakdown": [row.model_dump() for row in self._rows]}
+
+
+class RetrievedChunk(BaseModel):
+    ref_id: str
+    chunk_id: str
+    file_id: str
+    filename: str
+    chunk_index: int
+    text_content: str
+    score: float
+    page_number: Optional[int] = None
+    chapter_number: Optional[int] = None
 
 
 class StartSessionRequest(BaseModel):
@@ -206,12 +275,215 @@ def get_openai_client() -> OpenAI | None:
     return _openai_client
 
 
+def get_qdrant_client() -> QdrantClient:
+    global _qdrant_client
+    if _qdrant_client is None:
+        _qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+    return _qdrant_client
+
+
+def _normalized_provider() -> str:
+    return (VECTOR_DB_PROVIDER or "pgvector").strip().lower()
+
+
 def get_storage_client():
     global _storage_backend
     if _storage_backend is not None:
         return _storage_backend
     _storage_backend = get_storage_backend(provider="minio", bucket=VIVA_MEDIA_BUCKET)
     return _storage_backend
+
+
+def _metadata_int(payload: dict[str, Any], key: str) -> Optional[int]:
+    value = payload.get(key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _chunk_from_payload(payload: dict[str, Any], chunk_id: str, score: float) -> RetrievedChunk:
+    return RetrievedChunk(
+        ref_id="",
+        chunk_id=chunk_id,
+        file_id=str(payload.get("file_id", "")),
+        filename=str(payload.get("filename", "")),
+        chunk_index=int(payload.get("chunk_index", 0)),
+        text_content=str(payload.get("text", "") or ""),
+        score=score,
+        page_number=_metadata_int(payload, "page_number"),
+        chapter_number=_metadata_int(payload, "chapter_number"),
+    )
+
+
+def _assign_ref_ids(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    for idx, row in enumerate(chunks, start=1):
+        row.ref_id = f"Ref {idx}"
+    return chunks
+
+
+def _retrieve_with_qdrant(
+    file_id: str,
+    topic_embedding: list[float],
+    top_k: int,
+    chapter_number: Optional[int] = None,
+) -> list[RetrievedChunk]:
+    client = get_qdrant_client()
+    must = [FieldCondition(key="file_id", match=MatchValue(value=file_id))]
+    if chapter_number is not None:
+        must.append(FieldCondition(key="chapter_number", match=MatchValue(value=chapter_number)))
+    query_filter = Filter(must=must)
+
+    if hasattr(client, "search"):
+        hits = client.search(
+            collection_name=QDRANT_COLLECTION,
+            query_vector=topic_embedding,
+            query_filter=query_filter,
+            limit=top_k,
+            with_payload=True,
+        )
+    else:
+        query_result = client.query_points(
+            collection_name=QDRANT_COLLECTION,
+            query=topic_embedding,
+            query_filter=query_filter,
+            limit=top_k,
+            with_payload=True,
+        )
+        hits = getattr(query_result, "points", query_result)
+
+    chunks: list[RetrievedChunk] = []
+    for hit in hits:
+        payload = hit.payload or {}
+        chunks.append(_chunk_from_payload(payload, str(getattr(hit, "id", "")), float(hit.score)))
+    chunks.sort(key=lambda row: row.score, reverse=True)
+    return _assign_ref_ids(chunks)
+
+
+def _retrieve_with_pgvector(
+    file_id: str,
+    topic_embedding: list[float],
+    top_k: int,
+    chapter_number: Optional[int] = None,
+) -> list[RetrievedChunk]:
+    with get_db_context() as db:
+        distance_col = DocumentChunk.embedding.cosine_distance(topic_embedding).label("distance")
+        stmt = (
+            select(DocumentChunk, distance_col)
+            .where(DocumentChunk.file_id == file_id)
+            .order_by(distance_col)
+            .limit(top_k)
+        )
+        rows = db.execute(stmt).all()
+    chunks: list[RetrievedChunk] = []
+    for chunk, dist in rows:
+        metadata = chunk.metadata_ or {}
+        chunk_chapter = _metadata_int(metadata, "chapter_number")
+        if chapter_number is not None and chunk_chapter != chapter_number:
+            continue
+        chunks.append(
+            RetrievedChunk(
+                ref_id="",
+                chunk_id=chunk.id,
+                file_id=chunk.file_id,
+                filename=chunk.filename,
+                chunk_index=chunk.chunk_index,
+                text_content=chunk.text_content,
+                score=1.0 - float(dist if dist is not None else 0.0),
+                page_number=_metadata_int(metadata, "page_number"),
+                chapter_number=chunk_chapter,
+            )
+        )
+    chunks.sort(key=lambda row: row.score, reverse=True)
+    return _assign_ref_ids(chunks[:top_k])
+
+
+def _retrieve_topic_chunks(
+    file_id: str,
+    topic_embedding: list[float],
+    top_k: int,
+    chapter_number: Optional[int] = None,
+) -> list[RetrievedChunk]:
+    if _normalized_provider() == "qdrant":
+        return _retrieve_with_qdrant(
+            file_id=file_id,
+            topic_embedding=topic_embedding,
+            top_k=top_k,
+            chapter_number=chapter_number,
+        )
+    return _retrieve_with_pgvector(
+        file_id=file_id,
+        topic_embedding=topic_embedding,
+        top_k=top_k,
+        chapter_number=chapter_number,
+    )
+
+
+def _build_context_text(chunks: list[RetrievedChunk]) -> str:
+    blocks: list[str] = []
+    total_chars = 0
+    for row in chunks:
+        trimmed = (row.text_content or "").strip()
+        if len(trimmed) > VIVA_MAX_CHUNK_CHARS:
+            trimmed = f"{trimmed[:VIVA_MAX_CHUNK_CHARS]}..."
+        block = (
+            f"[{row.ref_id}]\n"
+            f"File ID: {row.file_id}\n"
+            f"Filename: {row.filename}\n"
+            f"Page: {row.page_number}\n"
+            f"Chapter: {row.chapter_number}\n"
+            f"Content: {trimmed}"
+        )
+        total_chars += len(block)
+        if total_chars > VIVA_MAX_CONTEXT_CHARS:
+            break
+        blocks.append(block)
+    return "\n\n".join(blocks)
+
+
+def _build_grounded_context(
+    topic: str,
+    file_id: str,
+    chapter_number: Optional[int],
+    cost_tracker: _CostTracker,
+    session_id: str | None = None,
+) -> str:
+    client = get_openai_client()
+    if client is None:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is required for grounded viva generation.")
+    safe_top_k = max(1, int(VIVA_RETRIEVAL_TOP_K or 20))
+    try:
+        emb_resp = client.embeddings.create(model=EMBED_MODEL, input=[topic])
+        cost_tracker.add_embedding(
+            kind="embedding",
+            model=EMBED_MODEL,
+            usage=getattr(emb_resp, "usage", None),
+            file_id=file_id,
+            meta=({"reason": "viva_topic_retrieval", "session_id": session_id} if session_id else {"reason": "viva_topic_retrieval"}),
+        )
+        topic_embedding = emb_resp.data[0].embedding
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Viva topic embedding failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to embed viva topic query.")
+    try:
+        chunks = _retrieve_topic_chunks(
+            file_id=file_id,
+            topic_embedding=topic_embedding,
+            top_k=safe_top_k,
+            chapter_number=chapter_number,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Viva vector retrieval failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Vector retrieval failed: {str(exc)}")
+    if not chunks:
+        raise HTTPException(status_code=404, detail="No relevant textbook chunks found for this book/topic.")
+    return _build_context_text(chunks)
 
 
 def _decode_base64_image(image_b64: str | None) -> bytes | None:
@@ -424,12 +696,17 @@ def _generate_question_bank_with_llm(
     question_count: int,
     cost_tracker: _CostTracker,
     file_id: str,
+    context_text: str,
     session_id: str | None = None,
 ) -> list[dict[str, Any]]:
     fallback = [
         {
-            "question": f"Question {idx + 1}: Explain a key concept in {topic} with one practical example.",
-            "expected_points": [f"Core concept {idx + 1}", "Correct terminology", "Relevant example"],
+            "question": f"Question {idx + 1}: Based on the provided textbook context, explain one key concept for {topic}.",
+            "expected_points": [
+                "Use only textbook facts from provided context",
+                "Mention one precise concept definition",
+                "Support with a context-grounded example",
+            ],
         }
         for idx in range(question_count)
     ]
@@ -442,7 +719,15 @@ def _generate_question_bank_with_llm(
             temperature=0.35,
             messages=[
                 {"role": "system", "content": "Return strict JSON only."},
-                {"role": "user", "content": build_question_bank_prompt(topic, chapter_number, question_count)},
+                {
+                    "role": "user",
+                    "content": build_question_bank_prompt(
+                        topic=topic,
+                        chapter_number=chapter_number,
+                        question_count=question_count,
+                        context_text=context_text,
+                    ),
+                },
             ],
         )
         cost_tracker.add_chat(
@@ -484,6 +769,7 @@ def _ensure_base_question_bank(
     db,
     session: VivaSession,
     cost_tracker: _CostTracker,
+    context_text: str,
     target_base_indexes: Optional[list[int]] = None,
 ) -> None:
     base_question_count = int(session.question_count or 0)
@@ -523,6 +809,7 @@ def _ensure_base_question_bank(
                 previous_answer=None,
                 cost_tracker=cost_tracker,
                 file_id=session.file_id,
+                context_text=context_text,
                 session_id=str(session.id),
             )
             question_order = _base_question_order(base_index, followup_count)
@@ -544,6 +831,7 @@ def _ensure_base_question_bank(
         question_count=base_question_count,
         cost_tracker=cost_tracker,
         file_id=session.file_id,
+        context_text=context_text,
         session_id=str(session.id),
     )
     now = datetime.utcnow()
@@ -571,11 +859,12 @@ def _generate_question_with_llm(
     previous_answer: Optional[str],
     cost_tracker: _CostTracker,
     file_id: str,
+    context_text: str = "",
     session_id: str | None = None,
 ) -> dict[str, Any]:
     client = get_openai_client()
     if question_index == 0:
-        user_prompt = build_initial_question_prompt(topic, chapter_number, question_count)
+        user_prompt = build_initial_question_prompt(topic, chapter_number, question_count, context_text)
     else:
         user_prompt = build_followup_prompt(
             topic=topic,
@@ -583,14 +872,19 @@ def _generate_question_with_llm(
             answer_transcript=previous_answer or "",
             question_index=question_index,
             total_questions=question_count,
+            context_text=context_text,
         )
 
     fallback = {
         "question": (
-            f"Question {question_index + 1}: Explain the most important concept in {topic} "
-            "and support your answer with an example."
+            f"Question {question_index + 1}: Based only on the provided textbook context, "
+            f"explain one important concept in {topic} and support your answer with an example."
         ),
-        "expected_points": [f"Core concept in {topic}", "Correct terminology", "One practical example"],
+        "expected_points": [
+            "Use only textbook facts from provided context",
+            f"Explain a core concept in {topic}",
+            "Include one context-grounded example",
+        ],
     }
     if client is None:
         return fallback
@@ -631,6 +925,7 @@ def _evaluate_answer(
     answer_transcript: str,
     cost_tracker: _CostTracker,
     file_id: str,
+    context_text: str = "",
     session_id: str | None = None,
 ) -> dict[str, Any]:
     fallback = {
@@ -643,7 +938,7 @@ def _evaluate_answer(
     client = get_openai_client()
     if client is None:
         return fallback
-    prompt = build_answer_evaluation_prompt(question_text, expected_points, answer_transcript)
+    prompt = build_answer_evaluation_prompt(question_text, expected_points, answer_transcript, context_text)
     try:
         completion = client.chat.completions.create(
             model=CHAT_MODEL,
@@ -819,6 +1114,7 @@ def _ensure_question_for_order(
     order: int,
     cost_tracker: _CostTracker,
     total_question_target: int,
+    context_text: str,
 ) -> VivaQuestion | None:
     question = (
         db.execute(
@@ -837,7 +1133,13 @@ def _ensure_question_for_order(
         return None
     plan = _plan_question(int(order), base_question_count)
     if plan["kind"] == "base":
-        _ensure_base_question_bank(db, session, cost_tracker, target_base_indexes=[int(plan["base_index"])])
+        _ensure_base_question_bank(
+            db,
+            session,
+            cost_tracker,
+            context_text=context_text,
+            target_base_indexes=[int(plan["base_index"])],
+        )
     else:
         previous_order = max(int(order) - 1, 1)
         previous_question = (
@@ -860,6 +1162,7 @@ def _ensure_question_for_order(
                 previous_answer=previous_turn.answer_transcript,
                 cost_tracker=cost_tracker,
                 file_id=session.file_id,
+                context_text=context_text,
                 session_id=str(session.id),
             )
             db.add(
@@ -1137,6 +1440,13 @@ def start_session(payload: StartSessionRequest):
         )
         db.add(session)
         db.flush()
+        context_text = _build_grounded_context(
+            topic=payload.topic.strip(),
+            file_id=payload.file_id,
+            chapter_number=payload.chapter_number,
+            cost_tracker=tracker,
+            session_id=str(session.id),
+        )
         first_question_data = _generate_question_with_llm(
             topic=payload.topic.strip(),
             chapter_number=payload.chapter_number,
@@ -1146,6 +1456,7 @@ def start_session(payload: StartSessionRequest):
             previous_answer=None,
             cost_tracker=tracker,
             file_id=payload.file_id,
+            context_text=context_text,
             session_id=str(session.id),
         )
         first_question = VivaQuestion(
@@ -1215,6 +1526,7 @@ def set_reference_photo(session_id: str, payload: ReferencePhotoRequest):
 
 @app.post("/viva/sessions/{session_id}/proctor/frame")
 def audit_frame(session_id: str, payload: ProctorFrameRequest):
+    tracker = _CostTracker()
     with get_db_context() as db:
         session = db.get(VivaSession, session_id)
         if session is None:
@@ -1223,7 +1535,12 @@ def audit_frame(session_id: str, payload: ProctorFrameRequest):
         if _session_timed_out(session):
             _mark_timeout(session)
             finalized = _finalize_session_with_db(db, session.id, force_termination_reason="session_timeout")
-            return {"session": finalized["session"], "action": "terminated", "reason": "session_timeout"}
+            return {
+                "session": finalized["session"],
+                "action": "terminated",
+                "reason": "session_timeout",
+                "cost": tracker.summary(),
+            }
 
         now = datetime.utcnow()
         last_proctor_event = _latest_proctor_event(db, session.id, ["frame_check", "frame_check_skipped"])
@@ -1256,6 +1573,7 @@ def audit_frame(session_id: str, payload: ProctorFrameRequest):
                     "warnings": int(session.warning_count or 0),
                     "throttled": True,
                     "retry_after_ms": retry_after_ms,
+                    "cost": tracker.summary(),
                 }
 
         result = verify_face(
@@ -1265,6 +1583,14 @@ def audit_frame(session_id: str, payload: ProctorFrameRequest):
             client=get_openai_client(),
             model=VISION_MODEL,
         )
+        if result.usage is not None:
+            tracker.add_chat(
+                kind="vision_proctor",
+                model=VISION_MODEL,
+                usage=result.usage,
+                file_id=session.file_id,
+                meta={"session_id": str(session.id)},
+            )
         anomaly, anomaly_reason = _is_proctor_anomaly(result, payload.threshold)
         recent_checks = _recent_frame_checks(db, session.id, max(1, PROCTOR_WINDOW_SIZE - 1))
         prior_anomaly_count = sum(1 for item in recent_checks if bool((item.details_json or {}).get("anomaly")))
@@ -1349,6 +1675,7 @@ def audit_frame(session_id: str, payload: ProctorFrameRequest):
                 },
                 "action": action,
                 "warnings": int(session.warning_count or 0),
+                "cost": tracker.summary(),
             }
 
         return {
@@ -1363,6 +1690,7 @@ def audit_frame(session_id: str, payload: ProctorFrameRequest):
             },
             "action": action,
             "warnings": int(session.warning_count or 0),
+            "cost": tracker.summary(),
         }
 
 
@@ -1381,6 +1709,13 @@ def submit_answer(session_id: str, payload: AnswerRequest):
 
         base_question_count = int(session.question_count or 0)
         total_question_target = _total_question_target(base_question_count)
+        context_text = _build_grounded_context(
+            topic=session.topic,
+            file_id=session.file_id,
+            chapter_number=session.chapter_number,
+            cost_tracker=tracker,
+            session_id=str(session.id),
+        )
         current_order = int(session.current_question_index or 0) + 1
         submitted_question_id = str(payload.question_id or "").strip()
         question = _ensure_question_for_order(
@@ -1389,6 +1724,7 @@ def submit_answer(session_id: str, payload: AnswerRequest):
             order=current_order,
             cost_tracker=tracker,
             total_question_target=total_question_target,
+            context_text=context_text,
         )
         if question is None:
             if submitted_question_id:
@@ -1402,6 +1738,7 @@ def submit_answer(session_id: str, payload: AnswerRequest):
                     order=current_order,
                     cost_tracker=tracker,
                     total_question_target=total_question_target,
+                    context_text=context_text,
                 )
         if question is None:
             if submitted_question_id:
@@ -1470,6 +1807,7 @@ def submit_answer(session_id: str, payload: AnswerRequest):
                 answer_transcript=transcript,
                 cost_tracker=tracker,
                 file_id=session.file_id,
+                context_text=context_text,
                 session_id=str(session.id),
             )
 
@@ -1517,7 +1855,13 @@ def submit_answer(session_id: str, payload: AnswerRequest):
             .first()
         )
         if next_question is None and plan["kind"] == "base":
-            _ensure_base_question_bank(db, session, tracker, target_base_indexes=[int(plan["base_index"])])
+            _ensure_base_question_bank(
+                db,
+                session,
+                tracker,
+                context_text=context_text,
+                target_base_indexes=[int(plan["base_index"])],
+            )
             next_question = (
                 db.execute(
                     select(VivaQuestion)
@@ -1537,6 +1881,7 @@ def submit_answer(session_id: str, payload: AnswerRequest):
                 previous_answer=transcript,
                 cost_tracker=tracker,
                 file_id=session.file_id,
+                context_text=context_text,
                 session_id=str(session.id),
             )
             next_question = VivaQuestion(

@@ -114,9 +114,15 @@ class VivaEndpointTests(unittest.TestCase):
     def setUp(self):
         self.init_db_patcher = patch("main.init_db", return_value=None)
         self.init_db_patcher.start()
+        self.context_patcher = patch(
+            "main._build_grounded_context",
+            return_value="[Ref 1]\nContent: grounded textbook excerpt",
+        )
+        self.context_patcher.start()
         self.client = TestClient(main.app)
 
     def tearDown(self):
+        self.context_patcher.stop()
         self.init_db_patcher.stop()
 
     def test_start_session_rejects_invalid_question_count(self):
@@ -445,6 +451,7 @@ class VivaEndpointTests(unittest.TestCase):
             previous_answer,  # noqa: ARG001
             cost_tracker,  # noqa: ARG001
             file_id,  # noqa: ARG001
+            context_text="",  # noqa: ARG001
             session_id=None,  # noqa: ARG001
         ):
             if previous_question:

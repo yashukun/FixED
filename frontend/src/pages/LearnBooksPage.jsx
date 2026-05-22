@@ -41,13 +41,10 @@ export default function LearnBooksPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold text-white">Learn • Books</h2>
-        <p className="text-sm text-slate-400">Your learning books, including teacher-shared and personal uploads.</p>
+        <p className="text-sm text-slate-400">All uploaded books are globally accessible in this workspace.</p>
       </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <BookList title="Teacher Uploaded" books={data.teacherUploaded} />
-        <BookList title="My Uploads" books={data.studentUploaded} />
-      </div>
-      <p className="text-xs text-slate-500">Data source: {data.source}</p>
+      <BookList title="All Uploaded Books" books={data.books || []} />
+      <p className="text-xs text-slate-500">Live library data from processed uploads.</p>
     </div>
   )
 }

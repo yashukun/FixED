@@ -83,3 +83,23 @@ describe('api.searchBookStream', () => {
     expect(payload.file_id).toBe('file-123')
   })
 })
+
+describe('dashboard analytics API routes', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('calls dashboard analytics summary endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ source: 'live' }) })
+    globalThis.fetch = fetchMock
+    await api.getDashboardAnalyticsSummary()
+    expect(fetchMock).toHaveBeenCalledWith('/api/gateway/dashboard/analytics/summary')
+  })
+
+  it('calls dashboard analytics breakdown endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ source: 'live' }) })
+    globalThis.fetch = fetchMock
+    await api.getDashboardAnalyticsBreakdown()
+    expect(fetchMock).toHaveBeenCalledWith('/api/gateway/dashboard/analytics/breakdown')
+  })
+})

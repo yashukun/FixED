@@ -14,6 +14,7 @@ class FaceAuditResult:
     is_match: bool
     confidence: float
     reason: str
+    usage: Any | None = None
 
 
 def _extract_json(raw: str) -> dict[str, Any]:
@@ -119,6 +120,7 @@ def _vision_face_compare(
         is_match=is_match,
         confidence=confidence,
         reason=reason,
+        usage=getattr(completion, "usage", None),
     )
 
 
@@ -131,18 +133,24 @@ def verify_face(
     model: str = "gpt-4o-mini",
 ) -> FaceAuditResult:
     if not frame_b64:
-        return FaceAuditResult(is_present=False, is_match=False, confidence=0.0, reason="no_frame")
+        return FaceAuditResult(is_present=False, is_match=False, confidence=0.0, reason="no_frame", usage=None)
     if len(frame_b64.strip()) < 32:
-        return FaceAuditResult(is_present=False, is_match=False, confidence=0.0, reason="frame_too_small")
+        return FaceAuditResult(is_present=False, is_match=False, confidence=0.0, reason="frame_too_small", usage=None)
     if not reference_photo_b64:
-        return FaceAuditResult(is_present=True, is_match=False, confidence=0.0, reason="missing_reference")
+        return FaceAuditResult(is_present=True, is_match=False, confidence=0.0, reason="missing_reference", usage=None)
     if client is None:
-        return FaceAuditResult(is_present=False, is_match=False, confidence=0.0, reason="provider_unavailable")
+        return FaceAuditResult(is_present=False, is_match=False, confidence=0.0, reason="provider_unavailable", usage=None)
     try:
         result = _vision_face_compare(client, model=model, reference_photo_b64=reference_photo_b64, frame_b64=frame_b64)
         if result.is_present and not result.is_match and result.reason == "mismatch" and result.confidence >= threshold:
             # Model hinted mismatch but confidence is high; mark uncertain for conservative handling upstream.
-            return FaceAuditResult(is_present=True, is_match=False, confidence=result.confidence, reason="uncertain")
+            return FaceAuditResult(
+                is_present=True,
+                is_match=False,
+                confidence=result.confidence,
+                reason="uncertain",
+                usage=result.usage,
+            )
         return result
     except Exception:
-        return FaceAuditResult(is_present=False, is_match=False, confidence=0.0, reason="provider_error")
+        return FaceAuditResult(is_present=False, is_match=False, confidence=0.0, reason="provider_error", usage=None)

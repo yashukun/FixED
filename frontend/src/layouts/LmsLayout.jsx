@@ -1,52 +1,43 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { useMemo, useState } from 'react'
+import { useCallback } from 'react'
 import { cn } from '../lib/utils'
 import { useCost } from '../context/useCost'
+import { api } from '../services/api'
+import { useAsyncResource } from '../hooks/useAsyncResource'
+import { ErrorBanner, SpinnerState } from '../components/feedback'
 
-const navSections = [
-  {
-    title: 'Main',
-    items: [{ label: 'Dashboard', to: '/' }],
-  },
-  {
-    title: 'Learn',
-    items: [
-      { label: 'Books', to: '/learn/books' },
-      { label: 'Subjects', to: '/learn/subjects' },
-      { label: 'Ask From Books', to: '/learn/assistant' },
-    ],
-  },
-  {
-    title: 'Upcoming',
-    items: [
-      { label: 'Mock Interview / Viva', to: '/viva' },
-      { label: 'Scheduled Tests', to: '/upcoming' },
-    ],
-  },
+const fallbackNav = [
+  { label: 'Dashboard', to: '/' },
+  { label: 'Learn / Books', to: '/learn/books' },
+  { label: 'Learn / Subjects', to: '/learn/subjects' },
+  { label: 'Ask From Books', to: '/learn/assistant' },
+  { label: 'Upcoming', to: '/upcoming' },
+  { label: 'Mock Interview / Viva', to: '/viva' },
 ]
 
-function RoleToggle() {
-  const [role, setRole] = useState('student')
-  const roleText = useMemo(() => (role === 'student' ? 'Student View' : 'Teacher View'), [role])
-
-  return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
-      <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Temporary Role</p>
-      <button
-        type="button"
-        onClick={() => setRole((prev) => (prev === 'student' ? 'teacher' : 'student'))}
-        className="w-full rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-700"
-      >
-        {roleText}
-      </button>
-    </div>
-  )
-}
-
 export default function LmsLayout() {
+  const loadNav = useCallback(() => api.getDashboardNav(), [])
+  const { data: navData, error: navError } = useAsyncResource(loadNav)
   const { sessionTotalUsd, liveCostUsd, liveLabel } = useCost()
   const formatUsd = (amount) => `$${Number(amount || 0).toFixed(4)}`
   const isLive = typeof liveCostUsd === 'number'
+  const navItems = Array.isArray(navData?.sections)
+    ? [
+        ...navData.sections.map((section) => ({
+          label: section.name || 'Untitled',
+          to: section.path || '/',
+        })),
+        ...fallbackNav.filter((item) => !navData.sections.some((section) => section.path === item.to)),
+      ]
+    : fallbackNav
+
+  if (navError) {
+    return <ErrorBanner message={navError} />
+  }
+
+  if (!navData) {
+    return <SpinnerState label="Loading workspace navigation" />
+  }
 
   return (
     <div className="min-h-screen bg-transparent text-slate-100">
@@ -58,41 +49,35 @@ export default function LmsLayout() {
           </div>
 
           <nav className="space-y-6">
-            {navSections.map((section) => (
-              <div key={section.title}>
-                <p className="mb-2 px-2 text-xs uppercase tracking-wide text-slate-500">{section.title}</p>
-                <ul className="space-y-1">
-                  {section.items.map((item) => (
-                    <li key={item.to + item.label}>
-                      <NavLink
-                        to={item.to}
-                        className={({ isActive }) =>
-                          cn(
-                            'block rounded-md px-3 py-2 text-sm transition',
-                            isActive
-                              ? 'bg-blue-500/20 text-blue-100 ring-1 ring-blue-500/40'
-                              : 'text-slate-300 hover:bg-slate-800/80 hover:text-white',
-                          )
-                        }
-                      >
-                        {item.label}
-                      </NavLink>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+            <div>
+              <p className="mb-2 px-2 text-xs uppercase tracking-wide text-slate-500">Workspace</p>
+              <ul className="space-y-1">
+                {navItems.map((item) => (
+                  <li key={item.to + item.label}>
+                    <NavLink
+                      to={item.to}
+                      className={({ isActive }) =>
+                        cn(
+                          'block rounded-md px-3 py-2 text-sm transition',
+                          isActive
+                            ? 'bg-blue-500/20 text-blue-100 ring-1 ring-blue-500/40'
+                            : 'text-slate-300 hover:bg-slate-800/80 hover:text-white',
+                        )
+                      }
+                    >
+                      {item.label}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
           </nav>
-
-          <div className="mt-8">
-            <RoleToggle />
-          </div>
         </aside>
 
         <main className="flex-1">
           <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/60 px-6 py-4 backdrop-blur-sm">
             <div className="flex items-center justify-between">
-              <p className="text-sm text-slate-300">Welcome back, Student</p>
+              <p className="text-sm text-slate-300">Welcome, {navData.student?.name || 'Workspace User'}</p>
               <div className="flex items-center gap-3">
                 <div className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
                   <span>Session: {formatUsd(sessionTotalUsd)}</span>
@@ -104,7 +89,7 @@ export default function LmsLayout() {
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-slate-500">Auth is mocked for UI preview</p>
+                <p className="text-xs text-slate-500">{navData.source === 'live' ? 'Live dashboard data' : 'Fallback data'}</p>
               </div>
             </div>
           </header>
