@@ -42,9 +42,14 @@ from config import (  # noqa: E402
     PROCTOR_WINDOW_ANOMALY_THRESHOLD,
     PROCTOR_WINDOW_SIZE,
     PROCTOR_VIOLATE_ON_AMBIGUOUS,
+    MINIO_ACCESS_KEY,
+    MINIO_ENDPOINT,
+    MINIO_SECRET_KEY,
+    MINIO_SECURE,
     QDRANT_API_KEY,
     QDRANT_COLLECTION,
     QDRANT_URL,
+    STORAGE_PROVIDER,
     STT_MODEL,
     TTS_MODEL,
     VECTOR_DB_PROVIDER,
@@ -56,6 +61,7 @@ from config import (  # noqa: E402
     VISION_MODEL,
 )
 from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost  # noqa: E402
+from embedding import EMBEDDING_DIMENSIONS  # noqa: E402
 from db import (  # noqa: E402
     ApiCostEvent,
     DocumentChunk,
@@ -76,10 +82,12 @@ from prompting import (  # noqa: E402
     build_result_summary_prompt,
 )
 from storage import get_storage_backend  # noqa: E402
+from observability import install_observability  # noqa: E402
 from providers.face import verify_face  # noqa: E402
 from providers.voice import synthesize_question_audio, transcribe_audio  # noqa: E402
 
 app = FastAPI(title="FixED - Viva Service")
+install_observability(app, "viva")
 logger = logging.getLogger(__name__)
 
 _openai_client = None
@@ -249,6 +257,12 @@ class SessionSummary(BaseModel):
     base_question_count: Optional[int] = None
     followup_min_count: Optional[int] = None
     total_question_target: Optional[int] = None
+    per_question_limit_seconds: Optional[int] = None
+    session_limit_seconds: Optional[int] = None
+    is_paused: bool = False
+    paused_at: Optional[str] = None
+    elapsed_seconds: Optional[int] = None
+    remaining_seconds: Optional[int] = None
 
 
 class QuestionPayload(BaseModel):
@@ -271,7 +285,11 @@ def get_openai_client() -> OpenAI | None:
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
         return None
-    _openai_client = OpenAI(api_key=api_key)
+    _openai_client = OpenAI(
+        api_key=api_key,
+        timeout=float(os.getenv("OPENAI_TIMEOUT", "120")),
+        max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
+    )
     return _openai_client
 
 
@@ -290,7 +308,14 @@ def get_storage_client():
     global _storage_backend
     if _storage_backend is not None:
         return _storage_backend
-    _storage_backend = get_storage_backend(provider="minio", bucket=VIVA_MEDIA_BUCKET)
+    _storage_backend = get_storage_backend(
+        provider=STORAGE_PROVIDER,
+        endpoint=MINIO_ENDPOINT,
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
+        bucket=VIVA_MEDIA_BUCKET,
+        secure=MINIO_SECURE,
+    )
     return _storage_backend
 
 
@@ -455,7 +480,7 @@ def _build_grounded_context(
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY is required for grounded viva generation.")
     safe_top_k = max(1, int(VIVA_RETRIEVAL_TOP_K or 20))
     try:
-        emb_resp = client.embeddings.create(model=EMBED_MODEL, input=[topic])
+        emb_resp = client.embeddings.create(model=EMBED_MODEL, input=[topic], dimensions=EMBEDDING_DIMENSIONS)
         cost_tracker.add_embedding(
             kind="embedding",
             model=EMBED_MODEL,
@@ -523,6 +548,9 @@ def _session_summary(session: VivaSession) -> SessionSummary:
     base_question_count = int(session.question_count or 0)
     followup_min_count = _followup_min_count(base_question_count)
     total_question_target = base_question_count + followup_min_count
+    session_limit = int(session.session_limit_seconds or 0)
+    elapsed = int(_active_elapsed_seconds(session))
+    remaining = max(0, session_limit - elapsed) if session.started_at else session_limit
     return SessionSummary(
         session_id=str(session.id),
         status=session.status.value if hasattr(session.status, "value") else str(session.status),
@@ -538,6 +566,12 @@ def _session_summary(session: VivaSession) -> SessionSummary:
         base_question_count=base_question_count,
         followup_min_count=followup_min_count,
         total_question_target=total_question_target,
+        per_question_limit_seconds=int(session.per_question_limit_seconds or 0),
+        session_limit_seconds=session_limit,
+        is_paused=session.paused_at is not None,
+        paused_at=session.paused_at.isoformat() if session.paused_at else None,
+        elapsed_seconds=elapsed,
+        remaining_seconds=remaining,
     )
 
 
@@ -567,11 +601,26 @@ def _ensure_active(session: VivaSession) -> None:
         raise HTTPException(status_code=409, detail=f"Session is not active. Status={session.status}")
 
 
+def _active_elapsed_seconds(session: VivaSession) -> float:
+    """Wall-clock seconds the session has been *active*, excluding paused time.
+
+    Subtracts already-banked paused time and, if the session is currently
+    paused, the in-progress paused span. This is what the session timeout is
+    measured against, so navigating away (which pauses) never burns the clock.
+    """
+    if not session.started_at:
+        return 0.0
+    elapsed = (datetime.utcnow() - session.started_at).total_seconds()
+    elapsed -= int(session.total_paused_seconds or 0)
+    if session.paused_at is not None:
+        elapsed -= (datetime.utcnow() - session.paused_at).total_seconds()
+    return max(0.0, elapsed)
+
+
 def _session_timed_out(session: VivaSession) -> bool:
     if not session.started_at:
         return False
-    elapsed = (datetime.utcnow() - session.started_at).total_seconds()
-    return elapsed > int(session.session_limit_seconds or 0)
+    return _active_elapsed_seconds(session) > int(session.session_limit_seconds or 0)
 
 
 def _question_timed_out(question: VivaQuestion, limit_seconds: int) -> bool:
@@ -1930,6 +1979,62 @@ def get_session(session_id: str):
             .scalars()
             .first()
         )
+        return {
+            "session": _session_summary(session),
+            "current_question": _serialize_question(current_question) if current_question else None,
+        }
+
+
+@app.post("/viva/sessions/{session_id}/pause")
+def pause_session(session_id: str):
+    """Pause an in-progress viva so the session clock stops while the candidate
+    is away (e.g. navigated to another tab). Idempotent: pausing an
+    already-paused, finished, or timed-out session is a safe no-op."""
+    with get_db_context() as db:
+        session = db.get(VivaSession, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Viva session not found")
+        if session.status in (VivaSessionStatus.PENDING, VivaSessionStatus.ACTIVE):
+            if _session_timed_out(session):
+                _mark_timeout(session)
+            elif session.paused_at is None:
+                session.paused_at = datetime.utcnow()
+        return {"session": _session_summary(session)}
+
+
+@app.post("/viva/sessions/{session_id}/resume")
+def resume_session(session_id: str):
+    """Resume a paused viva. Banks the paused span into ``total_paused_seconds``
+    and restarts the current question's timer (the client restarts its countdown
+    too) so the candidate is not penalised for the time away. Returns the same
+    shape as ``GET /viva/sessions/{id}`` so the client rehydrates in one call."""
+    with get_db_context() as db:
+        session = db.get(VivaSession, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Viva session not found")
+        if session.status not in (VivaSessionStatus.PENDING, VivaSessionStatus.ACTIVE):
+            return {"session": _session_summary(session), "current_question": None}
+        if session.paused_at is not None:
+            session.total_paused_seconds = int(session.total_paused_seconds or 0) + int(
+                (datetime.utcnow() - session.paused_at).total_seconds()
+            )
+            session.paused_at = None
+        if _session_timed_out(session):
+            _mark_timeout(session)
+            return {"session": _session_summary(session), "current_question": None}
+        current_order = int(session.current_question_index or 0) + 1
+        current_question = (
+            db.execute(
+                select(VivaQuestion)
+                .where(VivaQuestion.session_id == session.id, VivaQuestion.question_order == current_order)
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if current_question is not None:
+            # Restart the per-question clock so resume doesn't auto-zero the answer.
+            current_question.asked_at = datetime.utcnow()
         return {
             "session": _session_summary(session),
             "current_question": _serialize_question(current_question) if current_question else None,

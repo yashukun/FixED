@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Storage (provider-agnostic)
-    STORAGE_PROVIDER: str = "minio"      # "minio" | "s3" (future)
+    STORAGE_PROVIDER: str = "minio"      # "minio" (local) | "s3" (AWS)
     STORAGE_BUCKET: str = "documents"
 
     # MinIO-specific (ignored when STORAGE_PROVIDER != "minio")
@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     # PostgreSQL
     POSTGRES_URL: str = "postgresql://raguser:ragpass@postgres:5432/ragdb"
 
-    # Upload limits
-    MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100 MB
+    # Upload limits — keep in sync with nginx client_max_body_size (120m).
+    MAX_FILE_SIZE: int = 120 * 1024 * 1024  # 120 MB
 
     class Config:
         env_file = ".env"

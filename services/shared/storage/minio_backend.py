@@ -29,6 +29,16 @@ class MinIOBackend(StorageBackend):
         self.secret_key = secret_key or os.getenv("MINIO_SECRET_KEY", "minioadmin")
         self.bucket = bucket
 
+        # Fail closed: MinIO with its default credentials must never run in
+        # production (use STORAGE_PROVIDER=s3 with an IAM task role instead).
+        if os.getenv("APP_ENV", "development").lower() in {"production", "prod"} and (
+            self.access_key == "minioadmin" or self.secret_key == "minioadmin"
+        ):
+            raise RuntimeError(
+                "Refusing to use default MinIO credentials in production. "
+                "Set STORAGE_PROVIDER=s3 (recommended) or provide real MinIO credentials."
+            )
+
         self.client = Minio(
             self.endpoint,
             access_key=self.access_key,

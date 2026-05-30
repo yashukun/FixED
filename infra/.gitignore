@@ -1,0 +1,14 @@
+# Terraform working artifacts
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+.terraform.tfstate.lock.info
+
+# Local-only var files (never commit real secrets)
+*.local.tfvars
+*.auto.tfvars
+
+# Keep: .terraform.lock.hcl (provider version pinning) is committed.

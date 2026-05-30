@@ -6,6 +6,7 @@ import os
 from typing import Any, Dict, List
 
 from db import DocumentChunk, get_db_context
+from embedding import EMBEDDING_DIMENSIONS
 from qdrant_client import QdrantClient
 from qdrant_client import models as qdrant_models
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -19,7 +20,7 @@ VECTOR_DB_PROVIDER = os.environ.get("VECTOR_DB_PROVIDER", "pgvector")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", None)
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "document_chunks")
-EMBEDDING_DIMENSION = 1536
+EMBEDDING_DIMENSION = EMBEDDING_DIMENSIONS
 QDRANT_RECREATE_ON_DIM_MISMATCH = (
     os.environ.get("QDRANT_RECREATE_ON_DIM_MISMATCH", "false").lower() == "true"
 )
@@ -267,6 +268,14 @@ def upsert_vectors(
         expected_dim = len(vectors[0].get("values", []))
         if expected_dim <= 0:
             raise ValueError("Invalid vector payload: missing 'values' for Qdrant upsert.")
+        if expected_dim != EMBEDDING_DIMENSION:
+            # Guard against a dimension mismatch silently creating an inconsistent
+            # collection (e.g. an embed call that forgot dimensions=EMBEDDING_DIMENSIONS).
+            raise ValueError(
+                f"Embedding dimension mismatch: produced {expected_dim}-d vectors but "
+                f"the store expects {EMBEDDING_DIMENSION}-d. Ensure every embeddings.create() "
+                f"call passes dimensions=EMBEDDING_DIMENSIONS."
+            )
         _ensure_qdrant_collection(client, expected_dim=expected_dim)
         total = 0
         for i in range(0, len(vectors), batch_size):

@@ -1,102 +1,159 @@
-import { NavLink, Outlet } from 'react-router-dom'
-import { useCallback } from 'react'
-import { cn } from '../lib/utils'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useCallback, useState } from 'react'
 import { useCost } from '../context/useCost'
 import { api } from '../services/api'
 import { useAsyncResource } from '../hooks/useAsyncResource'
 import { ErrorBanner, SpinnerState } from '../components/feedback'
+import Icon from '../components/Icon'
 
-const fallbackNav = [
-  { label: 'Dashboard', to: '/' },
-  { label: 'Learn / Books', to: '/learn/books' },
-  { label: 'Learn / Subjects', to: '/learn/subjects' },
-  { label: 'Ask From Books', to: '/learn/assistant' },
-  { label: 'Upcoming', to: '/upcoming' },
-  { label: 'Mock Interview / Viva', to: '/viva' },
+// Static nav mapped to the real router routes, styled per the new design.
+// Counts are overlaid from the gateway nav payload when available.
+const NAV_GROUPS = [
+  {
+    items: [{ label: 'Dashboard', to: '/', icon: 'grid', end: true }],
+  },
+  {
+    label: 'Features',
+    items: [
+      { label: 'Search & Ask', to: '/learn/assistant', icon: 'search' },
+      { label: 'Subjects', to: '/learn/subjects', icon: 'layers' },
+      { label: 'Viva', to: '/viva', icon: 'mic' },
+    ],
+  },
+  {
+    label: 'Library',
+    items: [
+      { label: 'My books', to: '/learn/books', icon: 'book' },
+      { label: 'Upcoming', to: '/upcoming', icon: 'calendar' },
+    ],
+  },
 ]
 
+const greeting = () => {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 18) return 'Good afternoon'
+  return 'Good evening'
+}
+
+const initials = (name) => {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean)
+  if (!parts.length) return 'Fx'
+  return (parts[0][0] + (parts[1]?.[0] || '')).toUpperCase()
+}
+
+const formatUsd = (amount) => `$${Number(amount || 0).toFixed(4)}`
+
 export default function LmsLayout() {
+  const navigate = useNavigate()
+  const [headerQuery, setHeaderQuery] = useState('')
   const loadNav = useCallback(() => api.getDashboardNav(), [])
   const { data: navData, error: navError } = useAsyncResource(loadNav)
   const { sessionTotalUsd, liveCostUsd, liveLabel } = useCost()
-  const formatUsd = (amount) => `$${Number(amount || 0).toFixed(4)}`
   const isLive = typeof liveCostUsd === 'number'
-  const navItems = Array.isArray(navData?.sections)
-    ? [
-        ...navData.sections.map((section) => ({
-          label: section.name || 'Untitled',
-          to: section.path || '/',
-        })),
-        ...fallbackNav.filter((item) => !navData.sections.some((section) => section.path === item.to)),
-      ]
-    : fallbackNav
 
   if (navError) {
     return <ErrorBanner message={navError} />
   }
-
   if (!navData) {
     return <SpinnerState label="Loading workspace navigation" />
   }
 
+  const countByPath = new Map(
+    (Array.isArray(navData.sections) ? navData.sections : []).map((s) => [s.path, s.count]),
+  )
+  const studentName = navData.student?.name || 'Workspace User'
+  const studentSub = navData.student?.grade || 'LMS Workspace'
+
+  const onHeaderSearch = (e) => {
+    e.preventDefault()
+    navigate('/learn/assistant')
+  }
+
   return (
-    <div className="min-h-screen bg-transparent text-slate-100">
-      <div className="flex min-h-screen">
-        <aside className="hidden w-72 border-r border-slate-800 bg-slate-950/90 p-4 md:block">
-          <div className="mb-8 px-2">
-            <h1 className="text-2xl font-bold text-white">FixED LMS</h1>
-            <p className="mt-1 text-sm text-slate-400">Student learning workspace</p>
+    <div className="app">
+      <aside className="sidebar">
+        <NavLink to="/" end className="brand">
+          <div className="brand-mark">Fx</div>
+          <div>
+            <div className="brand-name">Fix<span>ED</span></div>
+            <div className="brand-sub">LMS Workspace</div>
+          </div>
+        </NavLink>
+
+        {NAV_GROUPS.map((group, gi) => (
+          <nav className="nav-group" key={group.label || `g${gi}`}>
+            {group.label && <div className="nav-label">{group.label}</div>}
+            {group.items.map((item) => {
+              const count = countByPath.get(item.to)
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+                >
+                  <Icon name={item.icon} />
+                  {item.label}
+                  {count ? <span className="nav-badge">{count}</span> : null}
+                </NavLink>
+              )
+            })}
+          </nav>
+        ))}
+
+        <div className="side-foot">
+          <div className="user">
+            <div className="avatar">{initials(studentName)}</div>
+            <div style={{ minWidth: 0 }}>
+              <div className="user-name">{studentName}</div>
+              <div className="user-mail">{studentSub}</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <div className="main">
+        <header className="header">
+          <div className="h-title">
+            <h1>{greeting()}, {studentName.split(' ')[0]}</h1>
+            <p>Search, generate papers and take vivas — all from your books.</p>
           </div>
 
-          <nav className="space-y-6">
-            <div>
-              <p className="mb-2 px-2 text-xs uppercase tracking-wide text-slate-500">Workspace</p>
-              <ul className="space-y-1">
-                {navItems.map((item) => (
-                  <li key={item.to + item.label}>
-                    <NavLink
-                      to={item.to}
-                      className={({ isActive }) =>
-                        cn(
-                          'block rounded-md px-3 py-2 text-sm transition',
-                          isActive
-                            ? 'bg-blue-500/20 text-blue-100 ring-1 ring-blue-500/40'
-                            : 'text-slate-300 hover:bg-slate-800/80 hover:text-white',
-                        )
-                      }
-                    >
-                      {item.label}
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </nav>
-        </aside>
+          <form className="search" onSubmit={onHeaderSearch}>
+            <Icon name="search" />
+            <input
+              placeholder="Ask a question, or “generate a paper…”"
+              value={headerQuery}
+              onChange={(e) => setHeaderQuery(e.target.value)}
+            />
+          </form>
 
-        <main className="flex-1">
-          <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/60 px-6 py-4 backdrop-blur-sm">
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-slate-300">Welcome, {navData.student?.name || 'Workspace User'}</p>
-              <div className="flex items-center gap-3">
-                <div className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
-                  <span>Session: {formatUsd(sessionTotalUsd)}</span>
-                  {isLive && (
-                    <span>
-                      {' '}
-                      · <span className="mr-1 inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-300" />
-                      Now: {formatUsd(liveCostUsd)} ({liveLabel || 'Request'})
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-slate-500">{navData.source === 'live' ? 'Live dashboard data' : 'Fallback data'}</p>
+          <div className="spacer" />
+
+          <div className="cost-meter">
+            <div className="cost-col">
+              <div className="lab">Session cost</div>
+              <div className="val">{formatUsd(sessionTotalUsd)}</div>
+            </div>
+            <div className="cost-div" />
+            <div className="cost-col">
+              <div className="lab">{isLive ? (liveLabel || 'Now') : 'Now'}</div>
+              <div className="val cost-now">
+                {isLive ? <><span className="pulse-dot" />{formatUsd(liveCostUsd)}</> : '—'}
               </div>
             </div>
-          </header>
-          <section className="p-6">
-            <Outlet />
-          </section>
-        </main>
+          </div>
+
+          <div className="tag-live">
+            <span className="pulse-dot" />
+            {navData.source === 'live' ? 'Live data' : 'Fallback data'}
+          </div>
+        </header>
+
+        <section className="content">
+          <Outlet />
+        </section>
       </div>
     </div>
   )

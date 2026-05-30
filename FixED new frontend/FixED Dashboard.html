@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FixED — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">Fx</div>
+      <div>
+        <div class="brand-name">Fix<span>ED</span></div>
+        <div class="brand-sub">LMS Workspace</div>
+      </div>
+    </div>
+
+    <nav class="nav-group">
+      <a class="nav-item active" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg>Dashboard</a>
+    </nav>
+
+    <div class="nav-group">
+      <div class="nav-label">Features</div>
+      <a class="nav-item" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search &amp; Ask</a>
+      <a class="nav-item" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h6"/></svg>Question papers<span class="nav-badge">47</span></a>
+      <a class="nav-item" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>Viva</a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">Library</div>
+      <a class="nav-item" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h11a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a2 2 0 0 1-2-2zM8 3v18"/></svg>My books<span class="nav-badge">21</span></a>
+      <a class="nav-item" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg>Upload</a>
+    </div>
+
+    <div class="side-foot">
+      <div class="user">
+        <div class="avatar">AR</div>
+        <div style="min-width:0">
+          <div class="user-name">Aarav Rao</div>
+          <div class="user-mail">grade 12 · science</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+
+    <header class="header">
+      <div class="h-title">
+        <h1>Good afternoon, Aarav</h1>
+        <p>Search, generate papers and take vivas — all from your books.</p>
+      </div>
+
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input placeholder="Ask a question, or “generate a paper…”" />
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="cost-meter">
+        <div class="cost-col">
+          <div class="lab">Session cost</div>
+          <div class="val">$1.84</div>
+        </div>
+        <div class="cost-div"></div>
+        <div class="cost-col">
+          <div class="lab">Now</div>
+          <div class="val cost-now"><span class="pulse-dot"></span>$0.012</div>
+        </div>
+      </div>
+
+      <div class="tag-live"><span class="pulse-dot"></span>Live data</div>
+    </header>
+
+    <div class="content">
+
+      <!-- toolbar -->
+      <div class="toolbar">
+        <div class="seg" id="rangeSeg">
+          <button data-r="7">7d</button>
+          <button data-r="14" class="on">14d</button>
+          <button data-r="30">30d</button>
+        </div>
+        <span class="muted-text" id="rangeNote">Last 14 days · updated just now</span>
+        <button class="btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg>
+          Upload book
+        </button>
+        <button class="btn btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          New search
+        </button>
+      </div>
+
+      <!-- KPI cards -->
+      <div class="grid kpis" id="kpis"></div>
+
+      <!-- main row: trend + focus -->
+      <div class="grid cols-3" style="margin-top:18px">
+        <div class="card">
+          <div class="chart-head">
+            <div>
+              <div class="card-h"><div><div class="t">Activity over time</div><div class="s">Searches, papers and vivas across FixED</div></div></div>
+              <div style="display:flex;align-items:baseline;gap:12px;margin-top:12px">
+                <div class="kpi-val" id="trendTotal" style="font-size:26px">—</div>
+                <span class="delta up" id="trendDelta">—</span>
+                <span class="ctx" style="color:var(--faint);font-size:12px">vs previous period</span>
+              </div>
+            </div>
+            <div class="seg" id="seriesSeg">
+              <button data-s="searches" class="on">Searches</button>
+              <button data-s="papers">Papers</button>
+              <button data-s="vivas">Vivas</button>
+            </div>
+          </div>
+          <div class="chart-wrap" id="trendWrap">
+            <div id="trend"></div>
+            <div class="tip" id="trendTip"></div>
+          </div>
+        </div>
+
+        <div class="card feed-card">
+          <div class="card-h" style="margin-bottom:8px">
+            <div><div class="t">Recent activity</div><div class="s">Across search, papers &amp; vivas</div></div>
+            <div class="icobox" style="margin-left:auto;background:var(--accent-soft);color:var(--accent-2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg></div>
+          </div>
+          <div class="feed" id="feed"></div>
+        </div>
+      </div>
+
+      <!-- breakdown row -->
+      <div class="section-title">Breakdowns <span class="ln"></span><a class="link" href="#">Full analytics →</a></div>
+      <div class="grid cols-2">
+        <div class="card">
+          <div class="card-h"><div><div class="t">Searches by book</div><div class="s">Which books you query the most</div></div></div>
+          <div class="donut-wrap" id="donut" style="margin-top:14px"></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><div><div class="t">Feature usage</div><div class="s">Share of activity across the three tools</div></div></div>
+          <div class="bars" id="bars" style="margin-top:18px"></div>
+        </div>
+      </div>
+
+      <!-- viva + library row -->
+      <div class="grid cols-3" style="margin-top:18px">
+        <div class="card">
+          <div class="card-h"><div><div class="t">Viva — video test</div><div class="s">Open your camera and get examined live</div></div><div class="icobox" style="margin-left:auto;background:color-mix(in oklch, var(--c-cyan) 16%, transparent);color:var(--c-cyan)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM15 10l6-3v10l-6-3"/></svg></div></div>
+          <div class="viva-grid">
+            <div class="viva-cam">
+              <span class="rec"><span class="rec-dot"></span>READY</span>
+              <div class="cam-center">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM15 10l6-3v10l-6-3"/></svg>
+                <div class="cam-label">Camera &amp; mic ready</div>
+              </div>
+              <button class="btn btn-primary cam-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg>Start viva</button>
+            </div>
+            <div class="viva-list" id="vivaList"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><div><div class="t">Your library</div><div class="s">Upload &amp; processing status</div></div><a class="link" href="#" style="margin-left:auto">All books →</a></div>
+          <div class="lib-list" id="library" style="margin-top:14px"></div>
+        </div>
+      </div>
+
+      <!-- recent question papers -->
+      <div class="section-title">Recent question papers <span class="ln"></span><a class="link" href="#">View all →</a></div>
+      <div class="card" style="padding:14px 6px 6px">
+        <table class="table">
+          <thead><tr><th>Paper</th><th>Source</th><th>Marks</th><th>Questions</th><th>Created</th><th>Status</th></tr></thead>
+          <tbody id="paperBody"></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>

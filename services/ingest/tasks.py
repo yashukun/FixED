@@ -1,4 +1,5 @@
 import logging
+import random
 import traceback
 
 from db import get_job, set_status, JobStatus
@@ -58,6 +59,9 @@ def process_document_task(self, job_id: str):
         # Note: process_and_store already marks as FAILED if an error happens during embedding,
         # but if download fails, we catch it here and mark it FAILED.
         set_status(job_id, JobStatus.FAILED, error=str(exc))
-        
-        # Retry logic for transient errors (e.g. Minio/Network blip)
-        raise self.retry(exc=exc, countdown=30)
+
+        # Retry transient errors (storage/network/API blips) with exponential
+        # backoff + jitter to avoid thundering-herd retries.
+        backoff = min(30 * (2 ** self.request.retries), 600)
+        countdown = int(backoff * (0.5 + random.random()))
+        raise self.retry(exc=exc, countdown=countdown)

@@ -1,5 +1,8 @@
 import os
 
+# When false (default/production) the /debug/retrieval endpoint returns 404.
+DEBUG = os.environ.get("DEBUG", "false").lower() in {"1", "true", "yes"}
+
 EMBED_MODEL = os.environ.get("SEARCH_EMBED_MODEL", "text-embedding-3-large")
 CHAT_MODEL = os.environ.get("SEARCH_CHAT_MODEL", "gpt-4o-mini")
 INTENT_MODEL = os.environ.get("SEARCH_INTENT_MODEL", CHAT_MODEL)

@@ -2,11 +2,13 @@
 Ingest Service — upload documents to storage and track jobs in PostgreSQL.
 """
 
+import os
 import uuid
 import mimetypes
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, status, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, status, Response, Request
+from starlette.concurrency import run_in_threadpool
 
 from config import settings
 from db import (
@@ -19,6 +21,7 @@ from db import (
     JobStatus,
 )
 from storage import get_storage_backend
+from observability import install_observability
 
 
 # ── Lifespan ─────────────────────────────────────────────────────────────
@@ -30,6 +33,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="FixED — Ingest Service", lifespan=lifespan)
+install_observability(app, "ingest")
 
 # ── Storage backend (provider-agnostic) ──────────────────────────────────
 
@@ -45,10 +49,32 @@ storage = get_storage_backend(
 
 from tasks import process_document_task
 
+# Accepted upload types (the processing pipeline only handles PDF and plain text).
+ALLOWED_EXTENSIONS = {".pdf", ".txt"}
+_READ_CHUNK = 1024 * 1024  # 1 MB
+
 
 def _extract_storage_key(storage_path: str) -> str:
     bucket_prefix = f"{settings.STORAGE_BUCKET}/"
     return storage_path.split(bucket_prefix, 1)[-1] if bucket_prefix in storage_path else storage_path
+
+
+def _store_and_enqueue(
+    *, content: bytes, filename: str, storage_key: str, content_type: str,
+    file_size: int, job_id: uuid.UUID,
+) -> None:
+    """Blocking work (object-storage upload, DB insert, Celery enqueue) — run in a
+    threadpool so it never blocks the event loop during a large upload."""
+    storage_path = storage.upload(data=content, key=storage_key, content_type=content_type)
+    with get_db_context() as db:
+        db.add(Job(
+            id=job_id,
+            filename=filename,
+            storage_path=storage_path,
+            file_size=file_size,
+            status=JobStatus.PENDING,
+        ))
+    process_document_task.delay(str(job_id))
 
 # ── Endpoints ────────────────────────────────────────────────────────────
 
@@ -58,44 +84,59 @@ def health():
 
 
 @app.post("/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(request: Request, file: UploadFile = File(...)):
     """Upload a document → store in object storage → create a pending job."""
 
-    # Read file
-    content = await file.read()
-    file_size = len(content)
+    max_size = settings.MAX_FILE_SIZE
+    max_mb = max_size // (1024 * 1024)
 
-    # Validate
-    if file_size > settings.MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File too large. Max {settings.MAX_FILE_SIZE // (1024*1024)}MB.",
-        )
-    # Generate job id & storage key
-    job_id = uuid.uuid4()
+    # Reject early using Content-Length when the client provides it, so we never
+    # start buffering an oversized upload.
+    declared_length = request.headers.get("content-length")
+    if declared_length is not None:
+        try:
+            if int(declared_length) > max_size:
+                raise HTTPException(status_code=413, detail=f"File too large. Max {max_mb}MB.")
+        except ValueError:
+            pass
+
+    # Validate the file type at the boundary (the pipeline only handles PDF/TXT).
     filename = file.filename or "unknown.bin"
+    if os.path.splitext(filename)[1].lower() not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported file type. Only PDF and TXT files are accepted.",
+        )
+
+    # Stream the body in chunks with a hard cap so a spoofed/absent Content-Length
+    # can't exhaust memory.
+    chunks: list[bytes] = []
+    file_size = 0
+    while True:
+        chunk = await file.read(_READ_CHUNK)
+        if not chunk:
+            break
+        file_size += len(chunk)
+        if file_size > max_size:
+            raise HTTPException(status_code=413, detail=f"File too large. Max {max_mb}MB.")
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    job_id = uuid.uuid4()
     storage_key = f"{job_id}/{filename}"
 
-    # Upload to storage
-    storage_path = storage.upload(
-        data=content,
-        key=storage_key,
+    # Offload blocking storage/DB/queue work so the event loop stays free.
+    await run_in_threadpool(
+        _store_and_enqueue,
+        content=content,
+        filename=filename,
+        storage_key=storage_key,
         content_type=file.content_type or "application/octet-stream",
+        file_size=file_size,
+        job_id=job_id,
     )
-
-    # Persist job record
-    with get_db_context() as db:
-        job = Job(
-            id=job_id,
-            filename=filename,
-            storage_path=storage_path,
-            file_size=file_size,
-            status=JobStatus.PENDING,
-        )
-        db.add(job)
-
-    # Trigger background Celery task
-    process_document_task.delay(str(job_id))
 
     return {"job_id": str(job_id), "status": "pending"}
 

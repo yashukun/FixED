@@ -24,6 +24,7 @@ from store_helpers import build_vectors, mark_job_completed, upsert_chapters
 from vector_store import upsert_vectors
 from db import set_status, JobStatus
 from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost
+from embedding import EMBEDDING_DIMENSIONS
 
 # ---------------------------------------------------------------------------
 # Clients (module-level singletons — instantiated once per worker process)
@@ -76,7 +77,11 @@ class _IngestCostTracker:
 def _get_openai() -> OpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        _openai_client = OpenAI(
+            api_key=os.environ["OPENAI_API_KEY"],
+            timeout=float(os.getenv("OPENAI_TIMEOUT", "120")),
+            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
+        )
     return _openai_client
 
 
@@ -377,6 +382,7 @@ def _embed_chunks(
         response = client.embeddings.create(
             model=EMBED_MODEL,
             input=batch,
+            dimensions=EMBEDDING_DIMENSIONS,
         )
         if cost_tracker is not None:
             cost_tracker.add_embedding(

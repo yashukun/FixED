@@ -1,0 +1,9 @@
+# Build context for the frontend image (built from ./frontend).
+node_modules
+dist
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+coverage

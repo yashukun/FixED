@@ -20,6 +20,7 @@ from sqlalchemy.orm.exc import DetachedInstanceError
 from config import (
     CHAPTER_SCOPE_LIMIT,
     CHAT_MODEL,
+    DEBUG,
     DEFAULT_TOP_K,
     EMBED_MODEL,
     GLOBAL_PROBE_TOP_K,
@@ -52,8 +53,11 @@ from text_utils import (
     trim_context,
 )
 from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost
+from embedding import EMBEDDING_DIMENSIONS
+from observability import get_request_id, install_observability
 
 app = FastAPI(title="FixED - Search Service")
+install_observability(app, "search")
 logger = logging.getLogger(__name__)
 
 _openai_client = None
@@ -236,7 +240,11 @@ def _normalized_provider() -> str:
 def get_openai_client() -> OpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        _openai_client = OpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY", ""),
+            timeout=float(os.getenv("OPENAI_TIMEOUT", "120")),
+            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
+        )
     return _openai_client
 
 
@@ -1189,7 +1197,7 @@ def _generate_question_paper(
     request = Request(
         endpoint,
         data=encoded,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "X-Request-ID": get_request_id()},
         method="POST",
     )
     try:
@@ -1366,7 +1374,7 @@ def _retrieve_for_request(
 
     if scope == "chapter" and req.file_id and chapters and resolved_chapter is None:
         try:
-            emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query])
+            emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query], dimensions=EMBEDDING_DIMENSIONS)
             cost_tracker.add_embedding(
                 kind="embedding",
                 model=EMBED_MODEL,
@@ -1420,7 +1428,7 @@ def _retrieve_for_request(
             )
         else:
             if query_embedding is None:
-                emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query])
+                emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query], dimensions=EMBEDDING_DIMENSIONS)
                 cost_tracker.add_embedding(
                     kind="embedding",
                     model=EMBED_MODEL,
@@ -1903,6 +1911,9 @@ def search_history_by_id(history_id: str):
 
 @app.post("/debug/retrieval", response_model=RetrievalDebugResponse)
 def debug_retrieval(req: SearchRequest):
+    # Internal diagnostics only — disabled unless DEBUG is explicitly enabled.
+    if not DEBUG:
+        raise HTTPException(status_code=404, detail="Not found.")
     query = req.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
@@ -1914,7 +1925,7 @@ def debug_retrieval(req: SearchRequest):
         page_range = (max(req.active_page - 1, 1), req.active_page + 1)
 
     try:
-        emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query])
+        emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query], dimensions=EMBEDDING_DIMENSIONS)
         query_embedding = emb_resp.data[0].embedding
         results = _retrieve_factoid(
             query_embedding=query_embedding,

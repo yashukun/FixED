@@ -7,6 +7,8 @@ from sqlalchemy import Column, String, Integer, DateTime, Text, Enum as SQLEnum,
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase
 
+from embedding import EMBEDDING_DIMENSIONS
+
 
 class Base(DeclarativeBase):
     """Shared declarative base for all ORM models."""
@@ -56,8 +58,9 @@ class DocumentChunk(Base):
     text_content = Column(Text, nullable=False)
     filename = Column(String(255), nullable=False)
     
-    # We use 1536 as the dimension for OpenAI's text-embedding-3-small
-    embedding = Column(Vector(1536))
+    # Vector size is the single shared constant (default 1536). Every service
+    # embeds at this dimensionality; see services/shared/embedding.py.
+    embedding = Column(Vector(EMBEDDING_DIMENSIONS))
     
     # Store any extra metadata (like Pinecone does)
     metadata_ = Column("metadata", JSONB, nullable=True)
@@ -199,6 +202,13 @@ class VivaSession(Base):
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     termination_reason = Column(String(128), nullable=True)
+    # Pause/resume support: when a candidate navigates away mid-viva the session
+    # is paused so the wall-clock `session_limit_seconds` does not run against
+    # them while gone. `paused_at` is set while currently paused; on resume the
+    # paused span is banked into `total_paused_seconds` and excluded from the
+    # elapsed-time computation (see _active_elapsed_seconds in viva/main.py).
+    paused_at = Column(DateTime, nullable=True)
+    total_paused_seconds = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

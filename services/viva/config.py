@@ -43,6 +43,13 @@ PROCTOR_WINDOW_SIZE = int(os.environ.get("VIVA_PROCTOR_WINDOW_SIZE", "8"))
 PROCTOR_WINDOW_ANOMALY_THRESHOLD = int(os.environ.get("VIVA_PROCTOR_WINDOW_ANOMALY_THRESHOLD", "3"))
 PROCTOR_WARNING_MIN_INTERVAL_MS = int(os.environ.get("VIVA_PROCTOR_WARNING_MIN_INTERVAL_MS", "10000"))
 VIVA_MEDIA_BUCKET = os.environ.get("VIVA_MEDIA_BUCKET", "viva-media")
+
+# Object storage (provider-agnostic): "minio" locally, "s3" on AWS.
+STORAGE_PROVIDER = os.environ.get("STORAGE_PROVIDER", "minio")
+MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
+MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() in {"1", "true", "yes"}
 VIVA_STORE_ALL_FRAMES = os.environ.get("VIVA_STORE_ALL_FRAMES", "0").lower() in {"1", "true", "yes"}
 PROCTOR_ACCESSORY_IS_VIOLATION = os.environ.get("VIVA_PROCTOR_ACCESSORY_IS_VIOLATION", "0").lower() in {
     "1",

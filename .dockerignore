@@ -1,0 +1,35 @@
+# Build context for the backend service images (built from repo root).
+# Keep this tight — the old context was ~278 MB, almost all frontend/node_modules.
+
+# VCS / OS
+.git
+.gitignore
+.DS_Store
+**/.DS_Store
+
+# Python caches / virtualenvs
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.venv/
+.venv-gateway/
+**/.venv/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Frontend + node (never needed in backend images)
+**/node_modules/
+frontend/dist/
+
+# Secrets / local env (never bake into an image)
+.env
+**/.env
+
+# Tooling / docs / infra not needed at runtime
+.github/
+infra/
+bruno/
+**/*.md
+viva_chat_detailed_report.*
+docker-compose.yml

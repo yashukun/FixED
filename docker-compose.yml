@@ -1,8 +1,9 @@
+# Local development stack. Production runs on AWS ECS Fargate (see infra/ + DEPLOY.md);
+# this file is for local dev only and uses local backends (MinIO, Qdrant, Postgres).
 services:
 
   postgres:
-    # We use pgvector/pgvector instead of standard postgres to support vector embeddings.
-    # We will use this locally, but keep the code modular to switch to Pinecone in production.
+    # pgvector image so the local DB matches RDS (which uses the pgvector extension).
     image: pgvector/pgvector:pg17
     container_name: postgres
     environment:
@@ -13,6 +14,7 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U raguser -d ragdb" ]
       interval: 5s
@@ -21,6 +23,7 @@ services:
   redis:
     image: redis:7-alpine
     ports: [ "6379:6379" ]
+    restart: unless-stopped
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
@@ -29,6 +32,7 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     ports: [ "6333:6333" ]
+    restart: unless-stopped
     volumes:
       - qdrant_data:/qdrant/storage
 
@@ -39,7 +43,23 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports: [ "9000:9000", "9001:9001" ]
+    restart: unless-stopped
     volumes: [ minio_data:/data ]
+
+  # One-shot schema migration (Alembic). App services wait for this to finish.
+  migrate:
+    build:
+      context: .
+      dockerfile: ./services/ingest/Dockerfile
+    command: python -m db.migrate
+    env_file: .env
+    environment:
+      - POSTGRES_URL=postgresql://raguser:ragpass@postgres:5432/ragdb
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    healthcheck:
+      disable: true
 
   ingest:
     build:
@@ -49,10 +69,13 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       qdrant: { condition: service_started }
+      minio: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
 
   celery_worker:
     build:
@@ -62,10 +85,19 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "celery -A shared.queue.celery_app inspect ping || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       qdrant: { condition: service_started }
+      minio: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
 
   search:
     build:
@@ -73,9 +105,11 @@ services:
       dockerfile: ./services/search/Dockerfile
     ports: [ "8002:8000" ]
     env_file: .env
+    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       qdrant: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
 
   qpaper:
     build:
@@ -83,9 +117,11 @@ services:
       dockerfile: ./services/qpaper/Dockerfile
     ports: [ "8003:8000" ]
     env_file: .env
+    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       qdrant: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
 
   viva:
     build:
@@ -93,15 +129,28 @@ services:
       dockerfile: ./services/viva/Dockerfile
     ports: [ "8004:8000" ]
     env_file: .env
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_started }
+      minio: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
 
   gateway:
-    build: ./services/gateway
+    build:
+      context: .
+      dockerfile: ./services/gateway/Dockerfile
     ports: [ "8000:8000" ]
     env_file: .env
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
 
   frontend:
     build: ./frontend
     ports: [ "3000:80" ]
+    restart: unless-stopped
     depends_on:
       gateway: { condition: service_started }
       ingest: { condition: service_started }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isRecoverableSubmitConflict, shouldAutoSubmitCurrentQuestion } from './VivaPage'
+import { isRecoverableSubmitConflict, shouldAutoSubmitCurrentQuestion } from './vivaAutoSubmit'
 
 describe('shouldAutoSubmitCurrentQuestion', () => {
   it('does not auto-submit before question deadline is initialized', () => {

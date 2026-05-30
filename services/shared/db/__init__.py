@@ -5,13 +5,16 @@ Exports: engine, SessionLocal, get_db, get_db_context,
          init_db, set_status, get_job, Base, Job, JobStatus
 """
 
+import logging
 import os
 import json
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import sessionmaker
+
+logger = logging.getLogger(__name__)
 
 from .models import (  # noqa: F401 — re-export
     ApiCostEvent,
@@ -32,15 +35,33 @@ from .models import (  # noqa: F401 — re-export
 
 # ── Engine ───────────────────────────────────────────────────────────────
 
-DATABASE_URL = os.getenv(
-    "POSTGRES_URL", "postgresql://raguser:ragpass@localhost:5432/ragdb"
-)
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+_INSECURE_DB_DEFAULT = "postgresql://raguser:ragpass@localhost:5432/ragdb"
+DATABASE_URL = os.getenv("POSTGRES_URL", _INSECURE_DB_DEFAULT)
+
+# Fail closed: never run in production against the insecure local default.
+if APP_ENV in {"production", "prod"} and "raguser:ragpass" in DATABASE_URL:
+    raise RuntimeError(
+        "POSTGRES_URL must be set to a real database in production "
+        "(refusing the insecure local default)."
+    )
+
+# Pool + connection tuning — env-overridable for RDS / managed Postgres.
+_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
+_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+# Recycle connections before RDS / proxy idle timeouts drop them out from under us.
+_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "10"))
+# "prefer" works locally (no TLS) and with RDS; set "require"/"verify-full" in prod.
+_SSLMODE = os.getenv("PGSSLMODE", "prefer")
 
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=_POOL_SIZE,
+    max_overflow=_MAX_OVERFLOW,
+    pool_recycle=_POOL_RECYCLE,
+    connect_args={"sslmode": _SSLMODE, "connect_timeout": _CONNECT_TIMEOUT},
     echo=False,
 )
 
@@ -74,8 +95,6 @@ def get_db_context():
 
 # ── DB operations ────────────────────────────────────────────────────────
 
-from sqlalchemy import text
-
 
 def _serialize_job(job: Job) -> dict:
     result_payload = None
@@ -104,38 +123,21 @@ def _serialize_job(job: Job) -> dict:
     }
 
 def init_db():
-    """Create all tables that don't exist yet."""
-    # Ensure the pgvector extension is installed before creating vector columns
-    with engine.connect() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        conn.commit()
+    """Verify database connectivity at startup (no DDL).
 
-    Base.metadata.create_all(bind=engine)
-    _ensure_search_history_columns()
-
-
-def _ensure_search_history_columns():
-    """Add newly introduced search history columns for existing deployments."""
-    with engine.connect() as conn:
-        conn.execute(
-            text(
-                "ALTER TABLE search_history "
-                "ADD COLUMN IF NOT EXISTS chat_session_id VARCHAR(128)"
-            )
-        )
-        conn.execute(
-            text(
-                "ALTER TABLE search_history "
-                "ADD COLUMN IF NOT EXISTS response_kind VARCHAR(32) NOT NULL DEFAULT 'answer'"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_search_history_session_created_at "
-                "ON search_history (chat_session_id, created_at)"
-            )
-        )
-        conn.commit()
+    Schema is owned by Alembic migrations under ``services/shared/db/migrations``
+    and applied out-of-band by a one-shot migration job — NOT by the application
+    on boot (running ``create_all`` / ``CREATE EXTENSION`` from every service on
+    every start races on a shared RDS instance and needs elevated privileges).
+    This performs only a lightweight, non-fatal connectivity probe so a
+    misconfigured database surfaces early in logs without crash-looping the task.
+    """
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        logger.info("Database connectivity OK (schema managed by Alembic).")
+    except Exception as exc:  # pragma: no cover — best-effort startup probe
+        logger.warning("Database connectivity check failed at startup: %s", exc)
 
 
 def set_status(job_id: str, status: str, error: str | None = None):

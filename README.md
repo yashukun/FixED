@@ -1,168 +1,80 @@
-## FixED Monorepo
+# FixED
 
-FixED is a multi-service stack for uploading textbooks (PDFs), indexing them into a vector store, and answering student questions with retrieval-augmented generation (RAG). The UI is a React SPA; backends are FastAPI services with PostgreSQL, Redis, Celery, object storage, and either **pgvector** (Postgres) or **Qdrant** for vectors.
+A multi-service RAG platform for education: upload textbooks (PDF/TXT), index them
+into a vector store, and answer student questions, generate question papers, and
+run proctored oral vivas — all grounded in the uploaded material.
 
-All project documentation for this repository lives in this root `README.md`.
+- **Frontend**: React 19 + Vite SPA, served by nginx (which also reverse-proxies `/api/*`).
+- **Backends**: FastAPI services — `gateway`, `ingest`, `search`, `qpaper`, `viva` — plus a Celery worker.
+- **Data**: Postgres + pgvector, Redis (Celery), Qdrant (vectors), object storage (MinIO local / S3 on AWS), OpenAI.
 
----
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and [DEPLOY.md](DEPLOY.md)
+for AWS deployment.
 
-## Architecture
-
-**Request path (high level)**
-
-1. **Upload** — The ingest API stores the file in MinIO (or another configured backend), creates a job row in Postgres, and enqueues a Celery task.
-2. **Processing** — The worker downloads bytes, extracts text, detects chapters (PDF outline first; optional LLM pass if the outline is thin), chunks text, calls OpenAI embeddings, and upserts vectors plus chapter metadata.
-3. **Search** — The search API applies lightweight guardrails, classifies intent (LLM with heuristic fallback), embeds the query, retrieves hybrid-ranked chunks, then generates an answer with an OpenAI chat model using only retrieved context.
-
-**Services**
-
-| Path | Port | Role |
-|------|------|------|
-| `frontend/` | 3000 | React + Vite (production build served by nginx; proxies `/api/*` to backends) |
-| `services/gateway/` | 8000 | Mock dashboard, learn, and upcoming APIs for the UI shell |
-| `services/ingest/` | 8001 | Upload, job status, triggers Celery processing |
-| `services/search/` | 8002 | `/search`, `/search/stream` (SSE), retrieval + answer generation |
-| `services/qpaper/` | 8003 | Health-only stub |
-| `services/viva/` | 8004 | Health-only stub |
-| `services/shared/` | — | Database models, cost recording, queue helpers, storage backends |
-
-**Infrastructure (Docker Compose)**
-
-- **postgres** — `pgvector/pgvector:pg17`; relational data, pgvector column for chunks when `VECTOR_DB_PROVIDER=pgvector`.
-- **redis** — Celery broker.
-- **qdrant** — Optional external vector database when `VECTOR_DB_PROVIDER=qdrant`.
-- **minio** — Object storage for uploaded PDFs.
-
-The frontend nginx config forwards `/api/gateway/`, `/api/ingest/`, and `/api/search/` to the corresponding containers (`frontend/nginx.conf`).
-
----
-
-## Prerequisites
-
-- Docker and Docker Compose
-- Node.js 20+ (local frontend lint/test)
-- Python 3.11+ (local backend unit tests)
-- An OpenAI API key for embeddings and chat unless you only exercise health endpoints
-
----
-
-## Configuration
-
-Create a `.env` file at the repo root (Compose loads it for services). There is no committed `.env.example`; set variables according to your deployment.
-
-**Required for full RAG behavior**
-
-- `OPENAI_API_KEY` — Used by ingest (embeddings, optional chapter detection) and search (embeddings, intent classification, final answer).
-
-**Vector store**
-
-- `VECTOR_DB_PROVIDER` — `pgvector` (default) or `qdrant`. Ingest and search must agree.
-- For Qdrant: `QDRANT_URL`, optional `QDRANT_API_KEY`, `QDRANT_COLLECTION`.
-
-**Embedding and chat models (override defaults as needed)**
-
-- Search: `SEARCH_EMBED_MODEL` (default `text-embedding-3-large`), `SEARCH_CHAT_MODEL` / `SEARCH_INTENT_MODEL` (default `gpt-4o-mini`).
-- Ingest: `INGEST_EMBED_MODEL`, `INGEST_CHAPTER_MODEL`, chunk sizes via `INGEST_CHUNK_SIZE`, `INGEST_CHUNK_OVERLAP`.
-
-**Important:** Postgres `document_chunks.embedding` and the Qdrant collection are built for **1536-dimensional** vectors. If you use an embedding model whose default output size is not 1536 (for example, `text-embedding-3-large` defaults to a larger size in the OpenAI API), you must either choose a 1536-default model such as `text-embedding-3-small`, or ensure your application passes a matching `dimensions` parameter everywhere embeddings are created. **Misaligned dimensions will break ingestion or search.**
-
----
-
-## Run the full stack
+## Run locally (Docker Compose)
 
 ```bash
+cp .env.example .env        # set OPENAI_API_KEY (and Qdrant key if not local)
 docker compose up --build
 ```
 
-**URLs**
+Compose starts the data backends, runs the **`migrate`** one-shot (Alembic creates
+the schema + pgvector extension + HNSW index), then the services.
 
-- Frontend: `http://localhost:3000`
-- Gateway: `http://localhost:8000`
-- Ingest: `http://localhost:8001`
-- Search: `http://localhost:8002`
-- QPaper / Viva: `8003` / `8004` (health checks only)
-
-Through the frontend nginx proxy (same origin): `/api/gateway/`, `/api/ingest/`, `/api/search/`.
-
----
-
-## API smoke checks
+- Frontend: <http://localhost:3000>
+- Per-service health: `:8000` gateway, `:8001` ingest, `:8002` search, `:8003` qpaper, `:8004` viva
+- Through the nginx proxy (same origin): `/api/{gateway,ingest,search,qpaper,viva}/...`
 
 ```bash
-curl http://localhost:8000/health
-curl http://localhost:8001/health
-curl http://localhost:8002/health
-curl http://localhost:8003/health
-curl http://localhost:8004/health
+for p in 8000 8001 8002 8003 8004; do curl -s localhost:$p/health; echo; done
 ```
 
-The `bruno/` directory contains Bruno requests for ingest and search (e.g. upload, job status, search).
+The `bruno/` directory has example API requests.
 
----
+## Configuration
 
-## Local quality checks
+All config is environment-driven; copy `.env.example` to `.env`. Key variables:
+`OPENAI_API_KEY`, `VECTOR_DB_PROVIDER` (`qdrant`), `STORAGE_PROVIDER`
+(`minio` local / `s3` on AWS), `EMBEDDING_DIMENSIONS` (default 1536), the DB pool /
+`PGSSLMODE` / Celery / logging knobs, and `CORS_ALLOW_ORIGINS`. In production set
+`APP_ENV=production` (the app then refuses insecure default credentials).
 
-**Frontend**
+## Database migrations
+
+Schema is owned by **Alembic** (`services/shared/db/migrations`), applied by a
+one-shot job — never by services at startup.
 
 ```bash
-cd frontend
-npm install
-npm run lint
-npm run test
+# apply locally (compose runs this for you):
+docker compose run --rm migrate
+# create a new revision after changing models:
+cd services/shared/db && POSTGRES_URL=postgresql://raguser:ragpass@localhost:5432/ragdb \
+  alembic -c alembic.ini revision --autogenerate -m "describe change"
 ```
 
-**Gateway**
+## Quality checks
 
 ```bash
-cd services/gateway
-python -m unittest -v test_main.py
+# Frontend
+cd frontend && npm ci && npm run lint && npm run test && npm run build
+
+# Backend (per service) — shared package must be importable
+PYTHONPATH=services/<svc>:services/shared python -m unittest discover -s services/<svc> -p 'test_*.py'
+
+# Infrastructure
+cd infra && tofu fmt -check -recursive && tofu init -backend=false && tofu validate
 ```
 
-**Search**
+CI (`.github/workflows/ci.yml`) runs all of the above on every PR.
 
-```bash
-cd services/search
-python -m unittest -v test_config.py test_text_utils.py test_guardrails.py
+## Layout
+
 ```
-
-**Ingest**
-
-```bash
-cd services/ingest
-python -m unittest -v test_pipeline_config.py
+frontend/                 React SPA + nginx ingress (default.conf.template)
+services/{gateway,ingest,search,qpaper,viva}/   FastAPI services
+services/shared/          db (+ Alembic), storage (MinIO/S3), queue, cost, embedding, observability
+infra/                    Terraform (AWS ECS Fargate) — see infra/README.md
+.github/workflows/        CI + deploy (OIDC, build → ECR → migrate → deploy)
+scripts/                  CI helpers (migration run-task, smoke test)
+docker-compose.yml        local dev stack
 ```
-
----
-
-## What works well
-
-- **End-to-end upload pipeline** — HTTP upload, durable job record, background worker, text extraction, recursive chunking, batched OpenAI embeddings, upsert into pgvector or Qdrant, chapter rows in Postgres when detection succeeds.
-- **Search/RAG** — Hybrid-style retrieval (vector plus lexical helpers), scoped retrieval (whole book / chapter / page when metadata and routing allow), teacher-style system prompts, non-streaming and **SSE streaming** answers, search history and **per-request cost breakdown** (`ApiCostEvent`).
-- **Resilience shortcuts** — Deterministic **guardrails** answer simple greetings and arithmetic without touching the book stack; **heuristic intent** runs when the API key is missing or the intent LLM returns unusable JSON.
-- **Operational toggles** — Same codebase can target pgvector or Qdrant; nginx buffering disabled for streaming search.
-- **UI shell** — Dashboard, learn, and assistant flows against the gateway mock plus real ingest/search for the document assistant.
-
----
-
-## Limitations and known gaps
-
-- **Gateway data is mock** — Responses are labeled `source: "mock"` (static dashboard metrics, book lists, subjects, upcoming events). They are not synced to Postgres or real LMS data.
-- **QPaper and Viva** — Only `/health`; no question-paper or viva logic yet.
-- **OpenAI dependency** — Without a valid key, ingest cannot embed documents; search cannot retrieve with embeddings or synthesize answers (guardrail-only queries still behave deterministically).
-- **Intent classification** — JSON parsed from the model with regex; malformed output silently falls back to keyword heuristics, which can mis-route ambiguous queries.
-- **Chapter detection** — Strong when the PDF has a usable outline; the LLM fallback depends on sampled pages and may yield a single synthetic **“Full Document”** chapter when detection fails.
-- **Final answer failures** — Chat completion errors surface a generic apology to the user while retrieval may still have succeeded (check logs).
-- **Retrieval failures** — Exceptions during embedding or DB/Qdrant access return HTTP 500 from search rather than a soft degradation.
-- **Pinecone** — Code paths exist in `vector_store.py` for future use but are not the default Compose path; they require separate credentials and setup.
-- **Celery retries** — Failed jobs may retry; persistent infrastructure or API errors still mark jobs failed after exhaustion.
-
----
-
-## Repository layout (concise)
-
-| Area | Contents |
-|------|-----------|
-| `frontend/src` | Pages (dashboard, learn, assistant), API client (`services/api.js`), PDF viewer, cost context |
-| `services/ingest` | FastAPI app, Celery task, `embedder.py`, `vector_store.py`, `store_helpers.py` |
-| `services/search` | FastAPI app, guardrails, prompting, Qdrant/pgvector retrieval |
-| `services/shared` | SQLAlchemy models (`db/models.py`), cost helpers, MinIO/S3-style storage |

@@ -1,24 +1,68 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
 import os
 from typing import Any
 
-import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-app = FastAPI()
+from observability import install_observability
+
 logger = logging.getLogger(__name__)
 
 
 def _postgres_url() -> str:
-    return os.getenv("POSTGRES_URL", "postgresql://raguser:ragpass@localhost:5432/ragdb")
+    url = os.getenv("POSTGRES_URL", "postgresql://raguser:ragpass@localhost:5432/ragdb")
+    if os.getenv("APP_ENV", "development").lower() in {"production", "prod"} and "raguser:ragpass" in url:
+        raise RuntimeError(
+            "POSTGRES_URL must be set to a real database in production "
+            "(refusing the insecure local default)."
+        )
+    return url
+
+
+# Module-level connection pool — opened once, reused across requests, instead of
+# a fresh TCP connect per query (which would exhaust RDS max_connections as the
+# gateway scales out).
+_pool: ConnectionPool | None = None
+
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(
+            conninfo=_postgres_url(),
+            min_size=int(os.getenv("GATEWAY_DB_POOL_MIN", "1")),
+            max_size=int(os.getenv("GATEWAY_DB_POOL_MAX", "10")),
+            max_idle=float(os.getenv("GATEWAY_DB_POOL_MAX_IDLE", "300")),
+            timeout=float(os.getenv("GATEWAY_DB_POOL_TIMEOUT", "10")),
+            kwargs={"row_factory": dict_row},
+            open=True,
+        )
+    return _pool
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        _get_pool()  # warm the pool at startup
+    except Exception:
+        logger.exception("Gateway connection pool failed to open at startup")
+    yield
+    if _pool is not None:
+        _pool.close()
+
+
+app = FastAPI(lifespan=lifespan)
+install_observability(app, "gateway")
 
 
 def _fetch_all(sql: str, params: tuple[Any, ...] = ()) -> list[dict]:
     try:
-        with psycopg.connect(_postgres_url(), row_factory=dict_row) as conn:
+        with _get_pool().connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 return list(cur.fetchall())
@@ -29,7 +73,7 @@ def _fetch_all(sql: str, params: tuple[Any, ...] = ()) -> list[dict]:
 
 def _fetch_one(sql: str, params: tuple[Any, ...] = ()) -> dict:
     try:
-        with psycopg.connect(_postgres_url(), row_factory=dict_row) as conn:
+        with _get_pool().connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 row = cur.fetchone()

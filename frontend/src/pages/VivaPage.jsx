@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../services/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button'
@@ -6,35 +6,12 @@ import { Input } from '../components/ui/input'
 import { Badge } from '../components/ui/badge'
 import { ErrorBanner } from '../components/feedback'
 import { useCost } from '../context/useCost'
+import { isRecoverableSubmitConflict, shouldAutoSubmitCurrentQuestion } from './vivaAutoSubmit'
 
-export function shouldAutoSubmitCurrentQuestion({
-  stage,
-  questionId,
-  secondsLeft,
-  busy,
-  submitInFlightQuestionId,
-  timeoutAutoSubmitQuestionId,
-  deadlineAtMs,
-  nowMs = Date.now(),
-}) {
-  if (stage !== 'session' || !questionId) return false
-  if (!Number.isFinite(deadlineAtMs)) return false
-  if (secondsLeft > 0 || busy) return false
-  if (nowMs < deadlineAtMs) return false
-  if (submitInFlightQuestionId === questionId) return false
-  if (timeoutAutoSubmitQuestionId === questionId) return false
-  return true
-}
-
-export function isRecoverableSubmitConflict(message) {
-  const normalized = String(message || '').toLowerCase()
-  return (
-    normalized.includes('no active question found for session') ||
-    normalized.includes('next question not found for session') ||
-    normalized.includes('session is not active') ||
-    normalized.includes('submitted question is stale for current session state')
-  )
-}
+// Pointer to the candidate's active (in-progress) viva session, so it can be
+// resumed after navigating away or refreshing. The session itself lives on the
+// backend; we only persist its id here.
+const ACTIVE_VIVA_KEY = 'fixed.viva.activeSessionId'
 
 function imageDataToBase64(dataUrl) {
   if (!dataUrl) return ''
@@ -91,6 +68,7 @@ export default function VivaPage() {
   const [history, setHistory] = useState([])
   const [historyError, setHistoryError] = useState('')
   const [selectedAudit, setSelectedAudit] = useState(null)
+  const [needsCameraResume, setNeedsCameraResume] = useState(false)
 
   const videoRef = useRef(null)
   const streamRef = useRef(null)
@@ -99,6 +77,8 @@ export default function VivaPage() {
   const proctorInFlightRef = useRef(false)
   const timeoutAutoSubmitRef = useRef('')
   const submitInFlightQuestionRef = useRef('')
+  const stageRef = useRef('setup')
+  const sessionIdRef = useRef(null)
 
   const readyJobs = useMemo(() => {
     if (!Array.isArray(jobs)) return []
@@ -125,6 +105,83 @@ export default function VivaPage() {
     }
   }, [])
 
+  const persistActiveSession = useCallback((id) => {
+    try {
+      if (id) window.localStorage.setItem(ACTIVE_VIVA_KEY, id)
+      else window.localStorage.removeItem(ACTIVE_VIVA_KEY)
+    } catch {
+      // localStorage may be unavailable (private mode); resume is best-effort.
+    }
+  }, [])
+
+  const speakQuestion = (text) => {
+    if (!text || !window.speechSynthesis) return
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = 1
+    utterance.pitch = 1
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(utterance)
+  }
+
+  // Keep refs in sync so the unmount/visibility/unload handlers below always see
+  // the latest stage + session id without re-subscribing.
+  useEffect(() => { stageRef.current = stage }, [stage])
+  useEffect(() => { sessionIdRef.current = session?.session_id || null }, [session?.session_id])
+
+  // Once the session reaches results, drop the persisted "active session" pointer.
+  useEffect(() => {
+    if (stage === 'results') persistActiveSession(null)
+  }, [stage, persistActiveSession])
+
+  // Resume an in-progress viva on mount: if a session id was persisted (because
+  // the candidate navigated away or refreshed), ask the backend to resume it
+  // (which banks the paused time and restarts the current question's timer) and
+  // rehydrate the live session. The camera must be re-granted by the candidate.
+  useEffect(() => {
+    let storedId = ''
+    try { storedId = window.localStorage.getItem(ACTIVE_VIVA_KEY) || '' } catch { storedId = '' }
+    if (!storedId) return undefined
+    let cancelled = false
+    const resume = async () => {
+      try {
+        const payload = await api.resumeVivaSession(storedId)
+        if (cancelled) return
+        const resumed = payload?.session || null
+        const status = String(resumed?.status || '').toLowerCase()
+        if ((status === 'active' || status === 'pending') && payload?.current_question) {
+          setSession(resumed)
+          setCurrentQuestion(payload.current_question)
+          setWarnings(Number(resumed?.warning_count || 0))
+          setReferenceCaptured(true)
+          setAnswerText('')
+          setQuestionDeadlineAtMs(null)
+          setStage('session')
+          setNeedsCameraResume(true)
+          speakQuestion(payload.current_question?.question_text)
+        } else {
+          // Already finished / terminated / timed out → surface its results.
+          persistActiveSession(null)
+          try {
+            const finalized = await api.getVivaResults(storedId)
+            if (!cancelled && finalized?.result) {
+              setResults({ ...finalized.result, session: finalized.session })
+              setSession(finalized.session || resumed)
+              setStage('results')
+            }
+          } catch {
+            // No results to show; fall back to the setup screen.
+          }
+        }
+      } catch {
+        if (!cancelled) persistActiveSession(null)
+      }
+    }
+    resume()
+    return () => { cancelled = true }
+    // Mount-only resume; intentionally not re-run on dependency changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const refreshHistory = async () => {
     try {
       setHistoryError('')
@@ -136,11 +193,15 @@ export default function VivaPage() {
   }
 
   useEffect(() => {
+    // Mount-time history load; the synchronous error reset inside is intentional.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refreshHistory()
   }, [])
 
   useEffect(() => {
     if (!fileId) {
+      // Reset chapters when no book is selected (intentional synchronous reset).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setChapters([])
       return
     }
@@ -192,8 +253,11 @@ export default function VivaPage() {
     if (!currentQuestion || stage !== 'session') return undefined
     const maxSeconds = Number(session?.per_question_limit_seconds || perQuestionLimit || 60)
     const deadlineAt = Date.now() + (maxSeconds * 1000)
+    // Initialize the per-question countdown when the question changes.
+    /* eslint-disable react-hooks/set-state-in-effect */
     setQuestionDeadlineAtMs(deadlineAt)
     setSecondsLeft(maxSeconds)
+    /* eslint-enable react-hooks/set-state-in-effect */
     const timer = window.setInterval(() => {
       const next = Math.max(Math.ceil((deadlineAt - Date.now()) / 1000), 0)
       setSecondsLeft(next)
@@ -209,6 +273,42 @@ export default function VivaPage() {
       if (speechRecognitionRef.current) {
         speechRecognitionRef.current.stop?.()
       }
+      // Navigating away mid-session pauses the backend clock so the candidate can
+      // resume where they left off without being penalised for the time away.
+      if (stageRef.current === 'session' && sessionIdRef.current) {
+        api.pauseVivaSession(sessionIdRef.current).catch(() => {})
+      }
+    }
+  }, [])
+
+  // Pause/resume on browser-tab visibility changes, and pause + warn on full page
+  // unload (close/refresh). Uses sendBeacon for unload, where an awaited fetch
+  // would be cancelled.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (stageRef.current !== 'session' || !sessionIdRef.current) return
+      if (document.visibilityState === 'hidden') {
+        api.pauseVivaSessionBeacon(sessionIdRef.current)
+      } else if (document.visibilityState === 'visible') {
+        api.resumeVivaSession(sessionIdRef.current)
+          .then((payload) => {
+            if (payload?.session) setSession(payload.session)
+            if (payload?.current_question) setCurrentQuestion(payload.current_question)
+          })
+          .catch(() => {})
+      }
+    }
+    const onBeforeUnload = (event) => {
+      if (stageRef.current !== 'session' || !sessionIdRef.current) return
+      api.pauseVivaSessionBeacon(sessionIdRef.current)
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('beforeunload', onBeforeUnload)
     }
   }, [])
 
@@ -221,6 +321,7 @@ export default function VivaPage() {
         videoRef.current.srcObject = stream
       }
       setMediaReady(true)
+      setNeedsCameraResume(false)
     } catch (err) {
       setLoadError(err.message || 'Camera/microphone permissions are required.')
     }
@@ -234,15 +335,6 @@ export default function VivaPage() {
     }
     setReferenceImageB64(frame)
     setReferenceCaptured(true)
-  }
-
-  const speakQuestion = (text) => {
-    if (!text || !window.speechSynthesis) return
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 1
-    utterance.pitch = 1
-    window.speechSynthesis.cancel()
-    window.speechSynthesis.speak(utterance)
   }
 
   const startListening = () => {
@@ -301,6 +393,7 @@ export default function VivaPage() {
       setCurrentQuestion(started.current_question)
       setWarnings(0)
       setStage('session')
+      persistActiveSession(sessionId)
       speakQuestion(started.current_question?.question_text)
     } catch (err) {
       clearLive()
@@ -478,6 +571,18 @@ export default function VivaPage() {
       </div>
 
       <ErrorBanner message={loadError || sessionError} />
+
+      {stage === 'session' && needsCameraResume ? (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+          <p className="text-sm font-medium text-amber-100">Viva resumed — re-enable your camera to continue.</p>
+          <p className="mt-1 text-xs text-amber-200/80">
+            Your progress and the current question were restored. Time spent away was not counted against your session limit.
+          </p>
+          <div className="mt-3">
+            <Button onClick={requestMedia}>Resume &amp; enable camera</Button>
+          </div>
+        </div>
+      ) : null}
 
       <Card>
         <CardHeader>
@@ -728,7 +833,9 @@ export default function VivaPage() {
                 <div>
                   <p className="text-sm text-white">{item.session.topic}</p>
                   <p className="text-xs text-slate-400">
-                    {new Date(item.session.started_at || item.session.finished_at || Date.now()).toLocaleString()} • status:{' '}
+                    {item.session.started_at || item.session.finished_at
+                      ? new Date(item.session.started_at || item.session.finished_at).toLocaleString()
+                      : '—'} • status:{' '}
                     {item.session.status} • score: {Number(item.metrics?.overall_score || 0).toFixed(1)}/
                     {Number(item.metrics?.max_score || 0).toFixed(1)} • warnings: {item.session.warning_count}
                   </p>

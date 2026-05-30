@@ -44,7 +44,7 @@ def get_storage_backend(provider: str = "minio", **kwargs) -> StorageBackend:
     if provider == "minio":
         from .minio_backend import MinIOBackend
         return MinIOBackend(**kwargs)
-    # elif provider == "s3":
-    #     from .s3_backend import S3Backend
-    #     return S3Backend(**kwargs)
+    if provider == "s3":
+        from .s3_backend import S3Backend
+        return S3Backend(**kwargs)
     raise ValueError(f"Unknown storage provider: {provider}")

@@ -355,6 +355,29 @@ export const api = {
     return res.json()
   },
 
+  pauseVivaSession: async (sessionId) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}/pause`, { method: 'POST' })
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to pause viva session'))
+    return res.json()
+  },
+
+  resumeVivaSession: async (sessionId) => {
+    const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}/resume`, { method: 'POST' })
+    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to resume viva session'))
+    return res.json()
+  },
+
+  // Best-effort pause that survives a full page unload (tab close / refresh),
+  // where an awaited fetch would be cancelled. Returns whether it was queued.
+  pauseVivaSessionBeacon: (sessionId) => {
+    if (!sessionId || typeof navigator === 'undefined' || !navigator.sendBeacon) return false
+    try {
+      return navigator.sendBeacon(`${VIVA_API}/viva/sessions/${sessionId}/pause`)
+    } catch {
+      return false
+    }
+  },
+
   getVivaSession: async (sessionId) => {
     const res = await fetch(`${VIVA_API}/viva/sessions/${sessionId}`)
     if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch viva session'))

@@ -37,6 +37,8 @@ from config import (  # noqa: E402
 )
 from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost  # noqa: E402
 from db import DocumentChunk, GeneratedPaper, get_db_context, init_db  # noqa: E402
+from embedding import EMBEDDING_DIMENSIONS  # noqa: E402
+from observability import install_observability  # noqa: E402
 from prompting import (  # noqa: E402
     build_question_paper_prompt,
     build_repair_prompt,
@@ -44,6 +46,7 @@ from prompting import (  # noqa: E402
 )
 
 app = FastAPI(title="FixED - QPaper Service")
+install_observability(app, "qpaper")
 logger = logging.getLogger(__name__)
 
 _openai_client = None
@@ -290,7 +293,11 @@ def _normalized_provider() -> str:
 def get_openai_client() -> OpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        _openai_client = OpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY", ""),
+            timeout=float(os.getenv("OPENAI_TIMEOUT", "120")),
+            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
+        )
     return _openai_client
 
 
@@ -1420,7 +1427,7 @@ def generate_paper(req: GeneratePaperRequest):
     cost_tracker = _CostTracker()
 
     try:
-        emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[topic])
+        emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[topic], dimensions=EMBEDDING_DIMENSIONS)
         cost_tracker.add_embedding(
             kind="embedding",
             model=EMBED_MODEL,

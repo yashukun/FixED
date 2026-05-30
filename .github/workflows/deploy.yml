@@ -1,0 +1,96 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag (git SHA) already in ECR, to promote to prod"
+        required: true
+
+permissions:
+  id-token: write # OIDC — no static AWS keys
+  contents: read
+
+jobs:
+  # ---- Build + push all images once (staging credentials), tagged by SHA ----
+  build:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for svc in gateway ingest search qpaper viva; do
+            img="$REGISTRY/fixed/$svc:$TAG"
+            docker build -f "services/$svc/Dockerfile" -t "$img" .
+            docker push "$img"
+          done
+          fimg="$REGISTRY/fixed/frontend:$TAG"
+          docker build -f frontend/Dockerfile -t "$fimg" frontend
+          docker push "$fimg"
+
+  # ---- Auto-deploy staging on every push to main ----
+  deploy-staging:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: opentofu/setup-opentofu@v1
+      - name: Apply + migrate + smoke
+        working-directory: infra
+        env:
+          ENVNAME: staging
+          IMAGE_TAG: ${{ github.sha }}
+          TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
+          ALB_BASE_URL: ${{ vars.ALB_BASE_URL }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_qdrant_url: ${{ vars.QDRANT_URL }}
+          TF_VAR_qdrant_api_key: ${{ secrets.QDRANT_API_KEY }}
+          TF_VAR_acm_certificate_arn: ${{ vars.ACM_CERTIFICATE_ARN }}
+          TF_VAR_alarm_email: ${{ vars.ALARM_EMAIL }}
+        run: bash ../scripts/ci-deploy.sh
+
+  # ---- Manual, gated promotion to prod (protected "production" environment) ----
+  deploy-prod:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: opentofu/setup-opentofu@v1
+      - name: Apply + migrate + smoke
+        working-directory: infra
+        env:
+          ENVNAME: prod
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
+          ALB_BASE_URL: ${{ vars.ALB_BASE_URL }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_qdrant_url: ${{ vars.QDRANT_URL }}
+          TF_VAR_qdrant_api_key: ${{ secrets.QDRANT_API_KEY }}
+          TF_VAR_acm_certificate_arn: ${{ vars.ACM_CERTIFICATE_ARN }}
+          TF_VAR_alarm_email: ${{ vars.ALARM_EMAIL }}
+        run: bash ../scripts/ci-deploy.sh
