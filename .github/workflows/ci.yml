@@ -1,11 +1,39 @@
-backend:
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint (advisory)
+        run: npm run lint
+        continue-on-error: true
+      - name: Run tests
+        run: npm run test
+      - name: Build
+        run: npm run build
+
+  backend:
     name: Backend checks
     runs-on: ubuntu-latest
-
     env:
       POSTGRES_URL: postgresql://raguser:ragpass@localhost:5432/ragdb
       MINIO_ENDPOINT: localhost:9000
-
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -20,16 +48,13 @@ backend:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Start MinIO
         run: |
           docker run -d --name minio \
@@ -37,7 +62,6 @@ backend:
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
             minio/minio server /data
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -45,7 +69,6 @@ backend:
             echo "Installing $req"
             pip install -r "$req"
           done
-
       - name: Wait for MinIO
         run: |
           for i in $(seq 1 30); do
@@ -55,21 +78,15 @@ backend:
             sleep 2
           done
           echo "MinIO did not become ready"; exit 1
-
       - name: Create database tables
         run: PYTHONPATH=services/shared python -c "import db; db.init_db()"
-
       - name: Test gateway
         run: PYTHONPATH=services/gateway:services/shared:services python -m unittest discover -s services/gateway -p 'test_*.py'
-
       - name: Test ingest
         run: PYTHONPATH=services/ingest:services/shared:services python -m unittest discover -s services/ingest -p 'test_*.py'
-
       - name: Test search
         run: PYTHONPATH=services/search:services/shared:services python -m unittest discover -s services/search -p 'test_*.py'
-
       - name: Test qpaper
         run: PYTHONPATH=services/qpaper:services/shared:services python -m unittest discover -s services/qpaper -p 'test_*.py'
-
       - name: Test viva
         run: PYTHONPATH=services/viva:services/shared:services python -m unittest discover -s services/viva -p 'test_*.py'
