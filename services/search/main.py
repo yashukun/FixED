@@ -1474,9 +1474,13 @@ def _retrieve_for_request(
                                 query_mode="scoped",
                             )
                         )
+                    # The probe only discovers candidate books; the answer
+                    # chunks come from the scoped per-book re-search. Folding the
+                    # coarse probe hits back into the ranking lets them displace
+                    # the proper scoped results, so rank scoped hits only.
                     merged = _dedupe_results(
                         sorted(
-                            combined_results + probe_results,
+                            combined_results,
                             key=lambda row: (row.score, -row.chunk_index),
                             reverse=True,
                         )

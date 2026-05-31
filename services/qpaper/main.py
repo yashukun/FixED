@@ -74,7 +74,7 @@ _SECTION_ALIAS_PATTERN = (
 
 
 def _canonicalize_section_text(section_text: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9\s/-]+", " ", section_text.lower())
+    cleaned = re.sub(r"[^a-z0-9\s/]+", " ", section_text.lower())
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
@@ -629,7 +629,7 @@ def _extract_topic_from_request(topic: str, request_text: str) -> str:
     if not request_text.strip():
         return topic
     topic_match = re.search(
-        r"\b(?:on|for)\s+(?:the\s+topic\s+of|topic|chapter|subject)\s+(.+?)(?:$|(?:\s+with\s+\d{1,3}\s*(?:%|percent(?:age)?|per\s*cent|pct)))",
+        r"\b(?:on|for)\s+(?:the\s+)?(?:topic|chapter|subject)(?:\s+of)?\s+(.+?)(?:$|(?:\s+with\s+\d{1,3}\s*(?:%|percent(?:age)?|per\s*cent|pct)))",
         request_text,
         flags=re.IGNORECASE,
     )

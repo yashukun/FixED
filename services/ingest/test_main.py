@@ -30,11 +30,9 @@ class IngestUploadEndpointTests(unittest.TestCase):
         self.init_db_patcher.stop()
 
     def test_upload_queues_pdf_for_async_validation_and_processing(self):
-        with (
-            patch("main.storage.upload", return_value="documents/job-id/notes.pdf"),
-            patch("main.get_db_context", side_effect=_fake_db_context),
-            patch("main.process_document_task.delay", return_value=None),
-        ) as (_, _, delay_mock):
+        with patch("main.storage.upload", return_value="documents/job-id/notes.pdf") as _, \
+                patch("main.get_db_context", side_effect=_fake_db_context) as _, \
+                patch("main.process_document_task.delay", return_value=None) as delay_mock:
             response = self.client.post(
                 "/upload",
                 files={"file": ("notes.pdf", b"%PDF-1.4 valid", "application/pdf")},
