@@ -476,6 +476,80 @@ class SearchEndpointTests(unittest.TestCase):
         self.assertEqual(retrieve_mock.call_args.kwargs["file_id"], "book-a")
         self.assertEqual(retrieve_mock.call_args.kwargs["query_mode"], "scoped")
 
+    def test_infer_candidate_file_ids_ranks_by_peak_relevance_not_volume(self):
+        # A large book contributes many mediocre chunks; a small book has one
+        # strong match. The strong match should win even though its summed score
+        # is lower — otherwise small books get buried in all-books search.
+        probe = [
+            main.SearchResult(chunk_id="b1", file_id="big", filename="big.pdf",
+                              chunk_index=1, text_content="x", score=0.60),
+            main.SearchResult(chunk_id="b2", file_id="big", filename="big.pdf",
+                              chunk_index=2, text_content="x", score=0.55),
+            main.SearchResult(chunk_id="b3", file_id="big", filename="big.pdf",
+                              chunk_index=3, text_content="x", score=0.50),
+            main.SearchResult(chunk_id="s1", file_id="small", filename="small.pdf",
+                              chunk_index=1, text_content="x", score=0.90),
+        ]
+        self.assertEqual(main._infer_candidate_file_ids(probe, limit=2), ["small", "big"])
+        self.assertEqual(main._infer_candidate_file_ids(probe, limit=1), ["small"])
+
+    def test_global_whole_book_routes_to_most_relevant_book_with_full_scope(self):
+        # "Summarize this book" with no book selected: route to the most
+        # relevant book (by peak relevance) and retrieve it with whole-book
+        # scope, instead of collapsing to a few factoid chunks.
+        query_embedding = [0.1, 0.2, 0.3]
+        probe_results = [
+            main.SearchResult(chunk_id="b1", file_id="big", filename="big.pdf",
+                              chunk_index=1, text_content="big", score=0.60),
+            main.SearchResult(chunk_id="b2", file_id="big", filename="big.pdf",
+                              chunk_index=2, text_content="big", score=0.55),
+            main.SearchResult(chunk_id="s1", file_id="small", filename="small.pdf",
+                              chunk_index=1, text_content="small", score=0.90),
+        ]
+        whole_book_results = [
+            main.SearchResult(chunk_id="w1", file_id="small", filename="small.pdf",
+                              chunk_index=0, text_content="full book", score=0.5),
+        ]
+        fake_embedding_resp = SimpleNamespace(
+            data=[SimpleNamespace(embedding=query_embedding)],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=0, total_tokens=10),
+        )
+        with (
+            patch("main.tokenize", return_value={"book"}),
+            patch("main._fetch_chapters", return_value=[]),
+            patch(
+                "main._classify_query",
+                return_value={
+                    "scope": "whole_book",
+                    "task": "summarize",
+                    "style": "default",
+                    "language": "en",
+                    "needs_chapter": False,
+                    "mentioned_chapter": None,
+                },
+            ),
+            patch("main.build_guardrail_answer", return_value=None),
+            patch(
+                "main.get_openai_client",
+                return_value=SimpleNamespace(embeddings=SimpleNamespace(create=lambda **kwargs: fake_embedding_resp)),
+            ),
+            patch("main._retrieve_factoid", return_value=probe_results) as factoid_mock,
+            patch("main._retrieve_scope_chunks", return_value=whole_book_results) as scope_mock,
+        ):
+            req = main.SearchRequest(query="summarize this book", file_id=None, top_k=5)
+            _, scope, _, _, _, _, ordered_results, _, _, routing = main._retrieve_for_request(req)
+
+        self.assertEqual(scope, "whole_book")
+        self.assertEqual([row.chunk_id for row in ordered_results], ["w1"])
+        self.assertEqual(routing["mode"], "global_scope_routed_to_book")
+        self.assertEqual(routing["resolved_file_id"], "small")
+        # probe ran once across all books; full-book retrieval targeted the
+        # most relevant book only.
+        self.assertEqual(factoid_mock.call_count, 1)
+        self.assertIsNone(factoid_mock.call_args.kwargs["file_id"])
+        self.assertEqual(scope_mock.call_args.kwargs["file_id"], "small")
+        self.assertEqual(scope_mock.call_args.kwargs["limit"], main.WHOLE_BOOK_LIMIT)
+
     def test_history_supports_chat_session_filter(self):
         row = SimpleNamespace(
             id=uuid.uuid4(),

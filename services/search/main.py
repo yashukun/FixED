@@ -41,7 +41,7 @@ from config import (
     VECTOR_DB_PROVIDER,
     WHOLE_BOOK_LIMIT,
 )
-from db import BookChapter, DocumentChunk, SearchHistory, get_db_context, init_db
+from db import BookChapter, DocumentChunk, SearchHistory, embedding_request_kwargs, get_db_context, init_db
 from guardrails import build_guardrail_answer
 from prompting import build_system_prompt, context_char_budget
 from text_utils import (
@@ -754,14 +754,31 @@ def _infer_candidate_file_ids(
     probe_results: list[SearchResult],
     limit: int,
 ) -> list[str]:
-    file_scores: dict[str, float] = {}
+    # Rank candidate books by relevance, not by how many chunks they happen to
+    # contribute to the probe. A large book naturally lands more chunks in the
+    # top-K, so ranking by summed score buries a small but highly-relevant book
+    # (e.g. an 18-chunk title loses to a 1200-chunk one). Rank by the best
+    # single chunk score first (peak topical match), then by total mass and hit
+    # count as tie-breakers.
+    stats: dict[str, dict[str, float]] = {}
     for row in probe_results:
         file_id = (row.file_id or "").strip()
         if not file_id:
             continue
-        file_scores[file_id] = file_scores.get(file_id, 0.0) + max(row.score, 0.0)
-    ranked = sorted(file_scores.items(), key=lambda item: item[1], reverse=True)
-    return [file_id for file_id, _ in ranked[: max(limit, 1)]]
+        score = max(float(row.score or 0.0), 0.0)
+        bucket = stats.get(file_id)
+        if bucket is None:
+            bucket = {"top": 0.0, "sum": 0.0, "count": 0.0}
+            stats[file_id] = bucket
+        bucket["top"] = max(bucket["top"], score)
+        bucket["sum"] += score
+        bucket["count"] += 1.0
+    ranked = sorted(
+        stats.keys(),
+        key=lambda fid: (stats[fid]["top"], stats[fid]["sum"], stats[fid]["count"]),
+        reverse=True,
+    )
+    return ranked[: max(limit, 1)]
 
 
 def _rank_qpaper_file_candidates(results: list[SearchResult]) -> list[dict[str, Any]]:
@@ -1357,6 +1374,10 @@ def _retrieve_for_request(
         file_id=req.file_id,
     )
     scope = _resolve_scope(str(intent.get("scope", "factoid")))
+    # Preserve the scope the query asked for before any fallback downgrades it
+    # (e.g. chapter -> factoid when no chapter resolves). The all-books router
+    # uses this to route a single-book query to the most relevant book.
+    requested_scope = scope
     task = str(intent.get("task", "qa"))
     style = str(intent.get("style", "default"))
     language = str(intent.get("language", "en"))
@@ -1366,7 +1387,7 @@ def _retrieve_for_request(
 
     if scope == "chapter" and req.file_id and chapters and resolved_chapter is None:
         try:
-            emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query])
+            emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query], **embedding_request_kwargs(EMBED_MODEL))
             cost_tracker.add_embedding(
                 kind="embedding",
                 model=EMBED_MODEL,
@@ -1420,7 +1441,7 @@ def _retrieve_for_request(
             )
         else:
             if query_embedding is None:
-                emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query])
+                emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query], **embedding_request_kwargs(EMBED_MODEL))
                 cost_tracker.add_embedding(
                     kind="embedding",
                     model=EMBED_MODEL,
@@ -1459,6 +1480,64 @@ def _retrieve_for_request(
                     retrieval_routing = {
                         "mode": "global_probe_only",
                         "candidate_file_ids": [],
+                    }
+                elif requested_scope in {"whole_book", "chapter", "page", "paragraph"}:
+                    # The query targets a single book ("summarize this book",
+                    # "chapter 3", ...) but none was selected. Route to the most
+                    # relevant book from the probe and retrieve it with the full
+                    # scope behaviour, mirroring an explicit book selection —
+                    # instead of collapsing to a handful of factoid chunks that
+                    # may come from the wrong (often largest) book.
+                    primary_file_id = candidate_file_ids[0]
+                    primary_chapters = _fetch_chapters(primary_file_id)
+                    primary_chapter = _resolve_chapter_number(req, intent, primary_chapters)
+                    routed_scope = requested_scope
+                    if routed_scope == "chapter" and primary_chapter is None:
+                        routed_scope = "whole_book"
+                    if routed_scope == "whole_book":
+                        results = _retrieve_scope_chunks(
+                            query_tokens=query_tokens,
+                            raw_query=query,
+                            file_id=primary_file_id,
+                            limit=WHOLE_BOOK_LIMIT,
+                        )
+                    elif routed_scope == "chapter":
+                        results = _retrieve_scope_chunks(
+                            query_tokens=query_tokens,
+                            raw_query=query,
+                            file_id=primary_file_id,
+                            limit=CHAPTER_SCOPE_LIMIT,
+                            chapter_number=primary_chapter,
+                        )
+                    elif routed_scope in {"page", "paragraph"} and page_range:
+                        results = _retrieve_scope_chunks(
+                            query_tokens=query_tokens,
+                            raw_query=query,
+                            file_id=primary_file_id,
+                            limit=PAGE_SCOPE_LIMIT,
+                            page_range=page_range,
+                        )
+                    else:
+                        # page/paragraph without a usable page range -> fall back
+                        # to a scoped factoid search on the routed book.
+                        routed_scope = "factoid"
+                        results = _retrieve_factoid(
+                            query_embedding=query_embedding,
+                            query_tokens=query_tokens,
+                            raw_query=query,
+                            file_id=primary_file_id,
+                            top_k=top_k,
+                            query_mode="scoped",
+                        )
+                    scope = routed_scope
+                    if routed_scope == "chapter":
+                        resolved_chapter = primary_chapter
+                    retrieval_routing = {
+                        "mode": "global_scope_routed_to_book",
+                        "scope": routed_scope,
+                        "resolved_file_id": primary_file_id,
+                        "candidate_file_ids": candidate_file_ids,
+                        "probe_top_k": probe_top_k,
                     }
                 else:
                     combined_results: list[SearchResult] = []
@@ -1918,7 +1997,7 @@ def debug_retrieval(req: SearchRequest):
         page_range = (max(req.active_page - 1, 1), req.active_page + 1)
 
     try:
-        emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query])
+        emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[query], **embedding_request_kwargs(EMBED_MODEL))
         query_embedding = emb_resp.data[0].embedding
         results = _retrieve_factoid(
             query_embedding=query_embedding,

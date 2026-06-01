@@ -22,7 +22,7 @@ from pipeline_config import (
 from content_guard import validate_upload_content
 from store_helpers import build_vectors, mark_job_completed, upsert_chapters
 from vector_store import upsert_vectors
-from db import set_status, JobStatus
+from db import set_status, JobStatus, embedding_request_kwargs
 from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost
 
 # ---------------------------------------------------------------------------
@@ -377,6 +377,7 @@ def _embed_chunks(
         response = client.embeddings.create(
             model=EMBED_MODEL,
             input=batch,
+            **embedding_request_kwargs(EMBED_MODEL),
         )
         if cost_tracker is not None:
             cost_tracker.add_embedding(

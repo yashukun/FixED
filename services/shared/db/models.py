@@ -7,6 +7,8 @@ from sqlalchemy import Column, String, Integer, DateTime, Text, Enum as SQLEnum,
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase
 
+from .embedding import EMBEDDING_DIMENSION
+
 
 class Base(DeclarativeBase):
     """Shared declarative base for all ORM models."""
@@ -56,8 +58,9 @@ class DocumentChunk(Base):
     text_content = Column(Text, nullable=False)
     filename = Column(String(255), nullable=False)
     
-    # We use 1536 as the dimension for OpenAI's text-embedding-3-small
-    embedding = Column(Vector(1536))
+    # Dimension is resolved from the active embedding model (single source of
+    # truth in db.embedding) so storage stays in sync with what gets embedded.
+    embedding = Column(Vector(EMBEDDING_DIMENSION))
     
     # Store any extra metadata (like Pinecone does)
     metadata_ = Column("metadata", JSONB, nullable=True)

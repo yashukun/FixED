@@ -13,6 +13,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import sessionmaker
 
+from .embedding import (  # noqa: F401 — re-export
+    EMBEDDING_DIMENSION,
+    embedding_request_kwargs,
+    model_native_dimension,
+    resolve_embedding_dimension,
+)
 from .models import (  # noqa: F401 — re-export
     ApiCostEvent,
     Base,

@@ -36,7 +36,7 @@ from config import (  # noqa: E402
     VECTOR_DB_PROVIDER,
 )
 from cost import compute_chat_cost, compute_embedding_cost, parse_usage_tokens, record_cost  # noqa: E402
-from db import DocumentChunk, GeneratedPaper, get_db_context, init_db  # noqa: E402
+from db import DocumentChunk, GeneratedPaper, embedding_request_kwargs, get_db_context, init_db  # noqa: E402
 from prompting import (  # noqa: E402
     build_question_paper_prompt,
     build_repair_prompt,
@@ -1420,7 +1420,7 @@ def generate_paper(req: GeneratePaperRequest):
     cost_tracker = _CostTracker()
 
     try:
-        emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[topic])
+        emb_resp = get_openai_client().embeddings.create(model=EMBED_MODEL, input=[topic], **embedding_request_kwargs(EMBED_MODEL))
         cost_tracker.add_embedding(
             kind="embedding",
             model=EMBED_MODEL,

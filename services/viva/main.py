@@ -65,6 +65,7 @@ from db import (  # noqa: E402
     VivaSession,
     VivaSessionStatus,
     VivaTurn,
+    embedding_request_kwargs,
     get_db_context,
     init_db,
 )
@@ -455,7 +456,7 @@ def _build_grounded_context(
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY is required for grounded viva generation.")
     safe_top_k = max(1, int(VIVA_RETRIEVAL_TOP_K or 20))
     try:
-        emb_resp = client.embeddings.create(model=EMBED_MODEL, input=[topic])
+        emb_resp = client.embeddings.create(model=EMBED_MODEL, input=[topic], **embedding_request_kwargs(EMBED_MODEL))
         cost_tracker.add_embedding(
             kind="embedding",
             model=EMBED_MODEL,
