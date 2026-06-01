@@ -347,10 +347,10 @@ export default function DocumentAssistant() {
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-lg font-semibold text-white">
+                <h3 className="text-lg font-semibold text-slate-50">
                   Searching in: {activeJob?.filename || 'All Books'}
                 </h3>
-                <p className="text-sm text-emerald-300">
+                <p className="text-sm text-emerald-700 dark:text-emerald-300">
                   {activeJob ? 'Document ready and indexed.' : 'Global mode across indexed books.'}
                 </p>
               </div>

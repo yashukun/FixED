@@ -1,10 +1,10 @@
 import { normalizeStatus } from '../lib/status'
 
 const statusColors = {
-  completed: 'bg-emerald-500/20 text-emerald-300',
-  ready: 'bg-emerald-500/20 text-emerald-300',
-  processing: 'bg-blue-500/20 text-blue-300',
-  pending: 'bg-amber-500/20 text-amber-300',
+  completed: 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300',
+  ready: 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300',
+  processing: 'bg-blue-500/20 text-blue-700 dark:text-blue-300',
+  pending: 'bg-amber-500/20 text-amber-700 dark:text-amber-300',
   failed: 'bg-rose-500/20 text-rose-300',
 }
 

@@ -56,12 +56,12 @@ export default function ProcessingIndicator({ jobId, onComplete, onError }) {
   return (
     <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
       <div className="spinner"></div>
-      <h2 className="mb-2 mt-3 text-lg font-semibold text-white">Processing Document</h2>
+      <h2 className="mb-2 mt-3 text-lg font-semibold text-slate-50">Processing Document</h2>
       <p className="text-sm text-slate-400">
         {status === 'PENDING' && 'Waiting in queue...'}
         {status === 'PROCESSING' && 'Extracting text and generating embeddings...'}
         {pollErrors > 0 && status !== 'FAILED' && (
-          <span className="mt-1 block text-amber-300">
+          <span className="mt-1 block text-amber-700 dark:text-amber-300">
             Connection hiccup while polling. Retrying...
           </span>
         )}

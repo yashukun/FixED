@@ -16,7 +16,7 @@ function EventList({ events }) {
       {events.map((event) => (
         <div key={event.id} className="flex items-center justify-between rounded-lg border border-slate-800 p-3">
           <div>
-            <p className="font-medium text-white">{event.title}</p>
+            <p className="font-medium text-slate-50">{event.title}</p>
             <p className="text-xs text-slate-400">{event.when} • {event.subject}</p>
           </div>
           <Badge variant={event.kind === 'viva' ? 'warning' : 'info'}>{event.kind}</Badge>
@@ -198,7 +198,7 @@ export default function UpcomingPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold text-white">Upcoming</h2>
+        <h2 className="text-2xl font-semibold text-slate-50">Upcoming</h2>
         <p className="text-sm text-slate-400">Scheduled tests and upcoming viva/mock interview modules.</p>
       </div>
 
@@ -306,12 +306,12 @@ export default function UpcomingPage() {
               </div>
             </div>
 
-            <p className={`text-xs ${distributionTotal === 100 ? 'text-emerald-400' : 'text-amber-300'}`}>
+            <p className={`text-xs ${distributionTotal === 100 ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-300'}`}>
               Distribution total: {distributionTotal}%
             </p>
             <ErrorBanner message={submitError} />
             {successMessage ? (
-              <p className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+              <p className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-200">
                 {successMessage}
               </p>
             ) : null}
@@ -337,7 +337,7 @@ export default function UpcomingPage() {
               <div key={paper.paper_id} className="rounded-lg border border-slate-800 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-medium text-white">{paper.topic}</p>
+                    <p className="font-medium text-slate-50">{paper.topic}</p>
                     <p className="text-xs text-slate-400">
                       {new Date(paper.created_at).toLocaleString()} • {paper.total_marks} marks • {paper.mode}
                     </p>
@@ -368,7 +368,7 @@ export default function UpcomingPage() {
           <CardContent className="space-y-4">
             {activeQuestions.map((q) => (
               <div key={q.qid} className="rounded-lg border border-slate-800 p-3">
-                <p className="font-medium text-white">
+                <p className="font-medium text-slate-50">
                   {q.number}. [{q.sectionLabel}] ({q.marks} marks)
                 </p>
                 <p className="mt-1 text-sm text-slate-200">{q.question}</p>
@@ -421,7 +421,7 @@ export default function UpcomingPage() {
             ))}
 
             {testResult ? (
-              <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+              <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-200">
                 Answered {testResult.answered}/{testResult.totalQuestions} questions.
                 Objective score: {testResult.objectiveScored}/{testResult.objectiveTotal}
               </div>

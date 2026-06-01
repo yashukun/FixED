@@ -48,7 +48,7 @@ export default function BookUploader({ onUploadStart, onUploadSuccess, onError }
 
   return (
     <div className="mx-auto w-full max-w-3xl">
-      <h2 className="mb-2 text-center text-xl font-semibold text-white">Upload a new book</h2>
+      <h2 className="mb-2 text-center text-xl font-semibold text-slate-50">Upload a new book</h2>
       <p className="mb-8 text-center text-sm text-slate-400">
         PDF, TXT, or Markdown supported
       </p>
@@ -79,7 +79,7 @@ export default function BookUploader({ onUploadStart, onUploadSuccess, onError }
           style={{ display: 'none' }} 
           onChange={handleFileChange}
         />
-        {isUploading && <p className="mt-4 text-sm text-blue-300">Uploading to server...</p>}
+        {isUploading && <p className="mt-4 text-sm text-blue-700 dark:text-blue-300">Uploading to server...</p>}
         <Button
           className="mt-6"
           onClick={(e) => {

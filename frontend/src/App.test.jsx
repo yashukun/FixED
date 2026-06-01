@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { vi, describe, it, expect, afterEach } from 'vitest'
 import App from './App'
 import { CostProvider } from './context/CostContext'
+import { ThemeProvider } from './context/ThemeContext'
 
 function mockFetch(payloadByUrl) {
   globalThis.fetch = vi.fn((url) => {
@@ -25,11 +26,13 @@ function mockFetch(payloadByUrl) {
 
 function renderWithProviders(initialEntries) {
   return render(
-    <CostProvider>
-      <MemoryRouter initialEntries={initialEntries}>
-        <App />
-      </MemoryRouter>
-    </CostProvider>,
+    <ThemeProvider>
+      <CostProvider>
+        <MemoryRouter initialEntries={initialEntries}>
+          <App />
+        </MemoryRouter>
+      </CostProvider>
+    </ThemeProvider>,
   )
 }
 

@@ -29,7 +29,7 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold text-white">Dashboard</h2>
+        <h2 className="text-2xl font-semibold text-slate-50">Dashboard</h2>
         <p className="mt-1 text-sm text-slate-400">Track your learning progress, assigned subjects, and upcoming activities.</p>
       </div>
 
@@ -79,19 +79,19 @@ export default function DashboardPage() {
         <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-lg border border-slate-800 p-3">
             <p className="text-xs uppercase tracking-wide text-slate-400">Searches</p>
-            <p className="text-xl font-semibold text-white">{summary.usage_volume.searches || 0}</p>
+            <p className="text-xl font-semibold text-slate-50">{summary.usage_volume.searches || 0}</p>
           </div>
           <div className="rounded-lg border border-slate-800 p-3">
             <p className="text-xs uppercase tracking-wide text-slate-400">Generated Papers</p>
-            <p className="text-xl font-semibold text-white">{summary.usage_volume.generated_papers || 0}</p>
+            <p className="text-xl font-semibold text-slate-50">{summary.usage_volume.generated_papers || 0}</p>
           </div>
           <div className="rounded-lg border border-slate-800 p-3">
             <p className="text-xs uppercase tracking-wide text-slate-400">Uploads</p>
-            <p className="text-xl font-semibold text-white">{summary.usage_volume.uploads || 0}</p>
+            <p className="text-xl font-semibold text-slate-50">{summary.usage_volume.uploads || 0}</p>
           </div>
           <div className="rounded-lg border border-slate-800 p-3">
             <p className="text-xs uppercase tracking-wide text-slate-400">Viva Sessions</p>
-            <p className="text-xl font-semibold text-white">{summary.usage_volume.viva_sessions || 0}</p>
+            <p className="text-xl font-semibold text-slate-50">{summary.usage_volume.viva_sessions || 0}</p>
           </div>
         </CardContent>
       </Card>
@@ -107,7 +107,7 @@ export default function DashboardPage() {
           ) : (
             timeseries.points.map((point) => (
               <div key={point.bucket} className="rounded-lg border border-slate-800 p-3 text-sm">
-                <p className="font-medium text-white">{point.bucket}</p>
+                <p className="font-medium text-slate-50">{point.bucket}</p>
                 <p className="text-slate-300">
                   Requests: {point.requests} • Tokens: {point.total_tokens} • Cost: ${Number(point.cost_usd || 0).toFixed(4)}
                 </p>

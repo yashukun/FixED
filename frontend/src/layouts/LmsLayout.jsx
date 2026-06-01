@@ -5,6 +5,7 @@ import { useCost } from '../context/useCost'
 import { api } from '../services/api'
 import { useAsyncResource } from '../hooks/useAsyncResource'
 import { ErrorBanner, SpinnerState } from '../components/feedback'
+import ThemeToggle from '../components/ThemeToggle'
 
 const fallbackNav = [
   { label: 'Dashboard', to: '/' },
@@ -44,7 +45,7 @@ export default function LmsLayout() {
       <div className="flex min-h-screen">
         <aside className="hidden w-72 border-r border-slate-800 bg-slate-950/90 p-4 md:block">
           <div className="mb-8 px-2">
-            <h1 className="text-2xl font-bold text-white">FixED LMS</h1>
+            <h1 className="text-2xl font-bold text-slate-50">FixED LMS</h1>
             <p className="mt-1 text-sm text-slate-400">Student learning workspace</p>
           </div>
 
@@ -60,8 +61,8 @@ export default function LmsLayout() {
                         cn(
                           'block rounded-md px-3 py-2 text-sm transition',
                           isActive
-                            ? 'bg-blue-500/20 text-blue-100 ring-1 ring-blue-500/40'
-                            : 'text-slate-300 hover:bg-slate-800/80 hover:text-white',
+                            ? 'bg-blue-500/20 text-blue-700 ring-1 ring-blue-500/40 dark:text-blue-100'
+                            : 'text-slate-300 hover:bg-slate-800/80 hover:text-slate-50',
                         )
                       }
                     >
@@ -79,7 +80,7 @@ export default function LmsLayout() {
             <div className="flex items-center justify-between">
               <p className="text-sm text-slate-300">Welcome, {navData.student?.name || 'Workspace User'}</p>
               <div className="flex items-center gap-3">
-                <div className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
+                <div className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-700 dark:text-emerald-200">
                   <span>Session: {formatUsd(sessionTotalUsd)}</span>
                   {isLive && (
                     <span>
@@ -90,6 +91,7 @@ export default function LmsLayout() {
                   )}
                 </div>
                 <p className="text-xs text-slate-500">{navData.source === 'live' ? 'Live dashboard data' : 'Fallback data'}</p>
+                <ThemeToggle />
               </div>
             </div>
           </header>

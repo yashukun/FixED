@@ -17,7 +17,7 @@ export default function LearnSubjectsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold text-white">Learn • Subjects</h2>
+        <h2 className="text-2xl font-semibold text-slate-50">Learn • Subjects</h2>
         <p className="text-sm text-slate-400">Subjects assigned to you for this term.</p>
       </div>
 
@@ -39,7 +39,7 @@ export default function LearnSubjectsPage() {
               <CardContent className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-slate-400">Assignments</span>
-                  <span className="font-semibold text-white">{subject.pendingAssignments}</span>
+                  <span className="font-semibold text-slate-50">{subject.pendingAssignments}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-slate-400">Progress</span>

@@ -17,7 +17,7 @@ function BookList({ title, books }) {
         {books.map((book) => (
           <div key={book.id} className="flex items-center justify-between rounded-lg border border-slate-800 p-3">
             <div>
-              <p className="font-medium text-white">{book.title}</p>
+              <p className="font-medium text-slate-50">{book.title}</p>
               <p className="text-xs text-slate-400">{book.subject} • {book.lastOpened}</p>
             </div>
             <Badge variant={isCompletedStatus(book.status) ? 'success' : 'warning'}>{book.status}</Badge>
@@ -40,7 +40,7 @@ export default function LearnBooksPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold text-white">Learn • Books</h2>
+        <h2 className="text-2xl font-semibold text-slate-50">Learn • Books</h2>
         <p className="text-sm text-slate-400">All uploaded books are globally accessible in this workspace.</p>
       </div>
       <BookList title="All Uploaded Books" books={data.books || []} />

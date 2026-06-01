@@ -15,8 +15,8 @@ export default function ResultsViewer({ searchData, onSelectClarification, isStr
     const options = searchData.clarification_options || []
     return (
       <div className="mt-8 rounded-xl border border-amber-500/40 bg-amber-500/10 p-5">
-        <h3 className="mb-2 text-base font-semibold text-amber-200">Chapter Needed</h3>
-        <p className="mb-4 text-sm text-amber-100">{searchData.answer}</p>
+        <h3 className="mb-2 text-base font-semibold text-amber-700 dark:text-amber-200">Chapter Needed</h3>
+        <p className="mb-4 text-sm text-amber-700 dark:text-amber-100">{searchData.answer}</p>
         <div className="flex flex-wrap gap-2">
           {options.map((option) => (
             <Button
@@ -55,7 +55,7 @@ export default function ResultsViewer({ searchData, onSelectClarification, isStr
     <div className="mt-8 flex w-full max-w-4xl flex-col gap-4">
       {/* AI Answer Section */}
       <div className="rounded-xl border border-blue-500/40 bg-slate-900/80 p-5">
-        <h3 className="mb-3 flex items-center gap-2 text-lg font-semibold text-white">
+        <h3 className="mb-3 flex items-center gap-2 text-lg font-semibold text-slate-50">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
           </svg>
@@ -63,7 +63,7 @@ export default function ResultsViewer({ searchData, onSelectClarification, isStr
         </h3>
         <div className="leading-7 text-slate-100">
           {searchData.answer}
-          {isStreaming && <span className="ml-1 inline-block animate-pulse text-blue-300">|</span>}
+          {isStreaming && <span className="ml-1 inline-block animate-pulse text-blue-700 dark:text-blue-300">|</span>}
         </div>
       </div>
 
@@ -102,8 +102,8 @@ export default function ResultsViewer({ searchData, onSelectClarification, isStr
 
       {hasResults && (
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-          <h4 className="mb-2 text-sm font-semibold text-emerald-200">Confidence</h4>
-          <div className="flex flex-wrap gap-3 text-sm text-emerald-100">
+          <h4 className="mb-2 text-sm font-semibold text-emerald-700 dark:text-emerald-200">Confidence</h4>
+          <div className="flex flex-wrap gap-3 text-sm text-emerald-700 dark:text-emerald-100">
             <span className="rounded-full bg-emerald-500/20 px-3 py-1">
               Top: {((topConfidence || 0) * 100).toFixed(1)}%
             </span>
@@ -126,7 +126,7 @@ export default function ResultsViewer({ searchData, onSelectClarification, isStr
               className="rounded-xl border border-slate-800 bg-slate-900/65 p-4"
             >
               <div className="mb-2 flex items-center justify-between">
-                <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-300">Confidence: {(result.score * 100).toFixed(1)}%</span>
+                <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">Confidence: {(result.score * 100).toFixed(1)}%</span>
                 <span className="text-xs text-slate-500">{result.filename}</span>
               </div>
               <p className="text-sm text-slate-200">{result.text_content}</p>

@@ -473,7 +473,7 @@ export default function VivaPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold text-white">Viva (Oral Examination)</h2>
+        <h2 className="text-2xl font-semibold text-slate-50">Viva (Oral Examination)</h2>
         <p className="text-sm text-slate-400">Identity-verified AI viva with live proctor checks and auto-scored results.</p>
       </div>
 
@@ -726,7 +726,7 @@ export default function VivaPage() {
             history.map((item) => (
               <div key={item.session.session_id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-800 p-3">
                 <div>
-                  <p className="text-sm text-white">{item.session.topic}</p>
+                  <p className="text-sm text-slate-50">{item.session.topic}</p>
                   <p className="text-xs text-slate-400">
                     {new Date(item.session.started_at || item.session.finished_at || Date.now()).toLocaleString()} • status:{' '}
                     {item.session.status} • score: {Number(item.metrics?.overall_score || 0).toFixed(1)}/
