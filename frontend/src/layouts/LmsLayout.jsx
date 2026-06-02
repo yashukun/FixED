@@ -9,8 +9,6 @@ import ThemeToggle from '../components/ThemeToggle'
 
 const fallbackNav = [
   { label: 'Dashboard', to: '/' },
-  { label: 'Learn / Books', to: '/learn/books' },
-  { label: 'Learn / Subjects', to: '/learn/subjects' },
   { label: 'Ask From Books', to: '/learn/assistant' },
   { label: 'Upcoming', to: '/upcoming' },
   { label: 'Mock Interview / Viva', to: '/viva' },

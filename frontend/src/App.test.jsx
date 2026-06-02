@@ -79,29 +79,6 @@ describe('LMS routes', () => {
     expect(await screen.findByText('Assigned Subjects')).toBeInTheDocument()
   })
 
-  it('renders books page and shows global books', async () => {
-    mockFetch({
-      '/api/gateway/dashboard/nav': {
-        source: 'live',
-        student: { id: 'global', name: 'Global Workspace', grade: 'All Features' },
-        sections: [{ name: 'Learn / Books', path: '/learn/books' }],
-      },
-      '/api/gateway/learn/books': {
-        source: 'live',
-        books: [
-          { id: '1', title: 'Class 10 Physics Essentials', subject: 'Physics', status: 'ready', lastOpened: '2026-05-06' },
-        ],
-      },
-    })
-
-    renderWithProviders(['/learn/books'])
-
-    await waitFor(() => {
-      expect(screen.getByText('Learn • Books')).toBeInTheDocument()
-    })
-    expect(screen.getByText('Class 10 Physics Essentials')).toBeInTheDocument()
-  })
-
   it('renders viva setup page', async () => {
     mockFetch({
       '/api/gateway/dashboard/nav': {

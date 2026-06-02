@@ -190,8 +190,6 @@ def dashboard_nav():
         },
         "sections": [
             {"name": "Dashboard", "path": "/", "count": _to_int(counts.get("uploads"))},
-            {"name": "Learn / Books", "path": "/learn/books", "count": _to_int(counts.get("uploads"))},
-            {"name": "Learn / Subjects", "path": "/learn/subjects", "count": _to_int(counts.get("papers"))},
             {"name": "Upcoming", "path": "/upcoming", "count": _to_int(counts.get("viva_sessions"))},
         ],
     }

@@ -100,18 +100,6 @@ export const api = {
     return res.json()
   },
 
-  getLearnBooks: async () => {
-    const res = await fetch(`${GATEWAY_API}/learn/books`)
-    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch books'))
-    return res.json()
-  },
-
-  getLearnSubjects: async () => {
-    const res = await fetch(`${GATEWAY_API}/learn/subjects`)
-    if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch subjects'))
-    return res.json()
-  },
-
   getUpcomingEvents: async () => {
     const res = await fetch(`${GATEWAY_API}/upcoming/events`)
     if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to fetch upcoming events'))
