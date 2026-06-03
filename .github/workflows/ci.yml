@@ -1,6 +1,6 @@
 name: CI
 
-on: [push, pull_request]
+on: [ push, pull_request ]
 
 jobs:
   frontend:
@@ -10,23 +10,38 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - name: Check out the code
-        uses: actions/checkout@v4
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install dependencies
-        run: npm ci
-      - name: Lint (advisory)
-        run: npm run lint
-        continue-on-error: true
-      - name: Run tests
-        run: npm run test
-      - name: Build
-        run: npm run build
+    - name: Check out the code
+      uses: actions/checkout@v4
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - name: Install dependencies
+      run: npm ci
+    - name: Lint (advisory)
+      run: npm run lint
+      continue-on-error: true
+    - name: Run tests
+      run: npm run test
+    - name: Build
+      run: npm run build
+
+  mark-deployable:
+    name: Mark commit as deployable
+    needs: [ frontend, backend ]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Check out the code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Point the deploy branch at this commit
+      run: git push origin HEAD:deploy --force
 
   backend:
     name: Backend checks
@@ -42,51 +57,48 @@ jobs:
           POSTGRES_PASSWORD: ragpass
           POSTGRES_DB: ragdb
         ports:
-          - 5432:5432
+        - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U raguser -d ragdb"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd "pg_isready -U raguser -d ragdb" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - name: Check out the code
-        uses: actions/checkout@v4
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Start MinIO
-        run: |
-          docker run -d --name minio \
-            -p 9000:9000 -p 9001:9001 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio server /data
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          for req in services/*/requirements.txt; do
-            echo "Installing $req"
-            pip install -r "$req"
-          done
-      - name: Wait for MinIO
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:9000/minio/health/live; then
-              echo "MinIO is ready"; exit 0
-            fi
-            sleep 2
-          done
-          echo "MinIO did not become ready"; exit 1
-      - name: Create database tables
-        run: PYTHONPATH=services/shared python -c "import db; db.init_db()"
-      - name: Test gateway
-        run: PYTHONPATH=services/gateway:services/shared:services python -m unittest discover -s services/gateway -p 'test_*.py'
-      - name: Test ingest
-        run: PYTHONPATH=services/ingest:services/shared:services python -m unittest discover -s services/ingest -p 'test_*.py'
-      - name: Test search
-        run: PYTHONPATH=services/search:services/shared:services python -m unittest discover -s services/search -p 'test_*.py'
-      - name: Test qpaper
-        run: PYTHONPATH=services/qpaper:services/shared:services python -m unittest discover -s services/qpaper -p 'test_*.py'
-      - name: Test viva
-        run: PYTHONPATH=services/viva:services/shared:services python -m unittest discover -s services/viva -p 'test_*.py'
+    - name: Check out the code
+      uses: actions/checkout@v4
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Start MinIO
+      run: |
+        docker run -d --name minio \
+          -p 9000:9000 -p 9001:9001 \
+          -e MINIO_ROOT_USER=minioadmin \
+          -e MINIO_ROOT_PASSWORD=minioadmin \
+          minio/minio server /data
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        for req in services/*/requirements.txt; do
+          echo "Installing $req"
+          pip install -r "$req"
+        done
+    - name: Wait for MinIO
+      run: |
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:9000/minio/health/live; then
+            echo "MinIO is ready"; exit 0
+          fi
+          sleep 2
+        done
+        echo "MinIO did not become ready"; exit 1
+    - name: Create database tables
+      run: PYTHONPATH=services/shared python -c "import db; db.init_db()"
+    - name: Test gateway
+      run: PYTHONPATH=services/gateway:services/shared:services python -m unittest discover -s services/gateway -p 'test_*.py'
+    - name: Test ingest
+      run: PYTHONPATH=services/ingest:services/shared:services python -m unittest discover -s services/ingest -p 'test_*.py'
+    - name: Test search
+      run: PYTHONPATH=services/search:services/shared:services python -m unittest discover -s services/search -p 'test_*.py'
+    - name: Test qpaper
+      run: PYTHONPATH=services/qpaper:services/shared:services python -m unittest discover -s services/qpaper -p 'test_*.py'
+    - name: Test viva
+      run: PYTHONPATH=services/viva:services/shared:services python -m unittest discover -s services/viva -p 'test_*.py'
